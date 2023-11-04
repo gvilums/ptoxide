@@ -37,22 +37,40 @@ enum Token {
     #[token(".align")]
     Align,
 
+    #[token(".b128")]
+    Bit128,
     #[token(".b64")]
     Bit64,
     #[token(".b32")]
     Bit32,
+    #[token(".b16")]
+    Bit16,
+    #[token(".b8")]
+    Bit8,
     #[token(".u64")]
     Unsigned64,
     #[token(".u32")]
     Unsigned32,
+    #[token(".u16")]
+    Unsigned16,
+    #[token(".u8")]
+    Unsigned8,
     #[token(".s64")]
     Signed64,
     #[token(".s32")]
     Signed32,
+    #[token(".s16")]
+    Signed16,
+    #[token(".s8")]
+    Signed8,
     #[token(".f64")]
     Float64,
     #[token(".f32")]
     Float32,
+    #[token(".f16x2")]
+    Float16x2,
+    #[token(".f16")]
+    Float16,
     #[token(".pred")]
     Predicate,
 
@@ -67,6 +85,8 @@ enum Token {
     Store,
     #[token("add")]
     Add,
+    #[token("mul")]
+    Mul,
     #[token("mov")]
     Move,
     #[token("mad")]
@@ -83,6 +103,16 @@ enum Token {
     Branch,
     #[token("setp")]
     SetPredicate,
+
+    #[token("bar")]
+    #[token("barrier")]
+    Bar,
+
+    #[token(".cta")]
+    Cta,
+
+    #[token(".sync")]
+    Sync,
 
     #[token(".to")]
     To,
@@ -270,14 +300,23 @@ enum StateSpace {
 
 #[derive(Debug)]
 enum Type {
+    Bit128,
     Bit64,
     Bit32,
+    Bit16,
+    Bit8,
     Unsigned64,
     Unsigned32,
+    Unsigned16,
+    Unsigned8,
     Signed64,
     Signed32,
+    Signed16,
+    Signed8,
     Float64,
     Float32,
+    Float16x2,
+    Float16,
     Predicate,
 }
 
@@ -361,12 +400,14 @@ enum InstructionSpecifier {
     Store(StateSpace, Type),
     Move(Type),
     Add(Type),
+    Multiply(Mode, Type),
     MultiplyAdd(Mode, Type),
     Convert { from: Type, to: Type },
     ConvertAddress(Type, StateSpace),
     ConvertAddressTo(Type, StateSpace),
     SetPredicate(Predicate, Type),
     ShiftLeft(Type),
+    BarrierSync,
     Branch,
     Return,
 }
@@ -462,13 +503,13 @@ fn parse_array_bounds(mut scanner: Scanner) -> ParseResult<Vec<u32>> {
     let mut bounds = Vec::new();
     loop {
         match scanner.get() {
-            Some(Token::RightBracket) => scanner.skip(),
+            Some(Token::LeftBracket) => scanner.skip(),
             _ => break Ok((bounds, scanner)),
         }
         let Token::Integer(bound) = scanner.must_pop()? else {
             return Err(ParseErr::UnexpectedToken(scanner.must_get()?));
         };
-        scanner.consume(Token::LeftBracket)?;
+        scanner.consume(Token::RightBracket)?;
         // todo clean up raw casts
         bounds.push(*bound as u32);
     }
@@ -497,12 +538,21 @@ fn parse_alignment(mut scanner: Scanner) -> ParseResult<u32> {
 
 fn parse_type(mut scanner: Scanner) -> ParseResult<Type> {
     let ty = match scanner.must_pop()? {
+        Token::Bit8 => Type::Bit8,
+        Token::Bit16 => Type::Bit16,
         Token::Bit32 => Type::Bit32,
         Token::Bit64 => Type::Bit64,
+        Token::Bit128 => Type::Bit128,
+        Token::Unsigned8 => Type::Unsigned8,
+        Token::Unsigned16 => Type::Unsigned16,
         Token::Unsigned32 => Type::Unsigned32,
         Token::Unsigned64 => Type::Unsigned64,
+        Token::Signed8 => Type::Signed8,
+        Token::Signed16 => Type::Signed16,
         Token::Signed32 => Type::Signed32,
         Token::Signed64 => Type::Signed64,
+        Token::Float16 => Type::Float16,
+        Token::Float16x2 => Type::Float16x2,
         Token::Float32 => Type::Float32,
         Token::Float64 => Type::Float64,
         Token::Predicate => Type::Predicate,
@@ -637,6 +687,11 @@ fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifi
             let (ty, scanner) = parse_type(scanner)?;
             Ok((InstructionSpecifier::Add(ty), scanner))
         }
+        Token::Mul => {
+            let (mode, scanner) = parse_mode(scanner)?;
+            let (ty, scanner) = parse_type(scanner)?;
+            Ok((InstructionSpecifier::Multiply(mode, ty), scanner))
+        }
         Token::MultiplyAdd => {
             let (mode, scanner) = parse_mode(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
@@ -677,7 +732,17 @@ fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifi
         }
         Token::Branch => Ok((InstructionSpecifier::Branch, scanner)),
         Token::Return => Ok((InstructionSpecifier::Return, scanner)),
-        t => Err(ParseErr::UnexpectedToken(t)),
+        Token::Bar => {
+            // cta token is meaningless
+            if let Some(Token::Cta) = scanner.get() {
+                scanner.skip();
+            }
+            scanner.consume(Token::Sync)?;
+            Ok((InstructionSpecifier::BarrierSync, scanner))
+        }
+        t => {
+            Err(ParseErr::UnexpectedToken(t))
+        },
     }
 }
 
@@ -869,11 +934,10 @@ fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let contents = fs::read_to_string("kernels/add.ptx")?;
+    let contents = fs::read_to_string("kernels/transpose.ptx")?;
     let Ok(tokens) = Token::lexer(&contents).collect::<Result<Vec<_>, _>>() else {
         panic!("Failed to lex file");
     };
-    // dbg!(&tokens);
     let module = match parse_program(Scanner::new(&tokens)) {
         Ok(m) => m,
         Err(e) => panic!("Failed to parse file: {}", e),
