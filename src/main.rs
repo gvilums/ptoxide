@@ -32,6 +32,8 @@ enum Token {
     Local,
     #[token(".shared")]
     Shared,
+    #[token(".const")]
+    Const,
 
     #[token(".b64")]
     Bit64,
@@ -51,6 +53,11 @@ enum Token {
     Float32,
     #[token(".pred")]
     Predicate,
+
+    #[token(".v2")]
+    V2,
+    #[token(".v4")]
+    V4,
 
     #[token("ld")]
     Load,
@@ -171,6 +178,10 @@ impl<'a> Scanner<'a> {
         self.tokens.first()
     }
 
+    fn must_get(&self) -> Result<&'a Token, ParseErr<'a>> {
+        self.get().ok_or(ParseErr::UnexpectedEof)
+    }
+
     fn skip(&mut self) {
         if self.tokens.len() > 0 {
             self.tokens = &self.tokens[1..];
@@ -192,7 +203,13 @@ impl<'a> Scanner<'a> {
         self.skip();
         head
     }
+
+    fn must_pop(&mut self) -> Result<&'a Token, ParseErr<'a>> {
+        self.pop().ok_or(ParseErr::UnexpectedEof)
+    }
 }
+
+type Ident = String;
 
 #[derive(Debug)]
 struct Version {
@@ -218,7 +235,7 @@ struct Module {
 
 #[derive(Debug)]
 struct Function {
-    ident: String,
+    ident: Ident,
     visible: bool,
     entry: bool,
     params: Vec<FunctionParam>,
@@ -227,21 +244,77 @@ struct Function {
 
 #[derive(Debug)]
 struct FunctionParam {
-    ident: String,
+    ident: Ident,
 }
 
 #[derive(Debug)]
-struct Variable {}
+enum StateSpace {
+    Global,
+    Local,
+    Shared,
+    Register,
+    Constant,
+    Parameter,
+}
+
+#[derive(Debug)]
+enum Type {
+    Bit64,
+    Bit32,
+    Unsigned64,
+    Unsigned32,
+    Signed64,
+    Signed32,
+    Float64,
+    Float32,
+    Predicate,
+}
+
+#[derive(Debug)]
+enum Vector {
+    V2,
+    V4,
+}
+
+#[derive(Debug)]
+struct Variable {
+    state_space: StateSpace,
+    ty: Type,
+    vector: Option<Vector>,
+    ident: Ident,
+    multiplicity: Option<u32>,
+}
 
 #[derive(Debug)]
 struct BasicBlock {
-    label: Option<String>,
+    label: Option<Ident>,
     variables: Vec<Variable>,
     instructions: Vec<Instruction>,
 }
 
 #[derive(Debug)]
-enum Instruction {}
+enum Operand {
+    Identifier(Ident),
+    Immediate(i32),
+    Address(Ident),
+}
+
+#[derive(Debug)]
+struct Instruction {
+    guard: Option<Ident>,
+    specifier: InstructionSpecifier,
+    ops: Vec<Operand>,
+}
+
+#[derive(Debug)]
+enum InstructionSpecifier {
+    Load(StateSpace, Type),
+    Store(StateSpace, Type),
+    Move(Type),
+    Add(Type),
+    MultiplyAdd(Type),
+    Convert(Type),
+}
 
 fn parse_program(scanner: Scanner) -> Result<Module, ParseErr> {
     let (module, scanner) = parse_module(scanner)?;
@@ -316,19 +389,148 @@ fn parse_functions(mut scanner: Scanner) -> ParseResult<Vec<Function>> {
     }
 }
 
-fn parse_function_body(mut scanner: Scanner) -> ParseResult<Vec<BasicBlock>> {
-    scanner.consume(Token::LeftBrace)?; // Consume the left brace
-    // TODO: Parse basic blocks
-    while let Some(tok) = scanner.pop() {
-        if tok == &Token::RightBrace {
+fn parse_variable(mut scanner: Scanner) -> ParseResult<Variable> {
+    let state_space = match scanner.must_pop()? {
+        Token::Global => StateSpace::Global,
+        Token::Local => StateSpace::Local,
+        Token::Shared => StateSpace::Shared,
+        Token::Reg => StateSpace::Register,
+        Token::Param => StateSpace::Parameter,
+        Token::Const => StateSpace::Constant,
+        t => return Err(ParseErr::UnexpectedToken(t)),
+    };
+
+    let vector = match scanner.get() {
+        Some(Token::V2) => {
+            scanner.skip();
+            Some(Vector::V2)
+        }
+        Some(Token::V4) => {
+            scanner.skip();
+            Some(Vector::V4)
+        }
+        _ => None,
+    };
+
+    let ty = match scanner.must_pop()? {
+        Token::Bit64 => Type::Bit64,
+        Token::Bit32 => Type::Bit32,
+        Token::Unsigned64 => Type::Unsigned64,
+        Token::Unsigned32 => Type::Unsigned32,
+        Token::Signed64 => Type::Signed64,
+        Token::Signed32 => Type::Signed32,
+        Token::Float64 => Type::Float64,
+        Token::Float32 => Type::Float32,
+        Token::Predicate => Type::Predicate,
+        t => return Err(ParseErr::UnexpectedToken(t)),
+    };
+
+    let ident = match scanner.must_pop()? {
+        Token::Identifier(s) => s.clone(),
+        t => return Err(ParseErr::UnexpectedToken(t)),
+    };
+
+    let multiplicity = match scanner.get() {
+        Some(Token::RegMultiplicity(m)) => {
+            scanner.skip();
+            Some(*m)
+        }
+        _ => None,
+    };
+
+    scanner.consume(Token::Semicolon)?;
+
+    Ok((
+        Variable {
+            state_space,
+            ty,
+            vector,
+            ident,
+            multiplicity,
+        },
+        scanner,
+    ))
+}
+
+fn parse_instruction(mut scanner: Scanner) -> ParseResult<Instruction> {
+    while let Some(t) = scanner.pop() {
+        if t == &Token::Semicolon {
+            // return Ok((Instruction { guard: None, specifier: }, scanner));
             break;
         }
     }
-    Ok((Vec::new(), scanner))
+    Err(ParseErr::UnexpectedEof)
+}
+
+fn parse_basic_block(mut scanner: Scanner) -> ParseResult<BasicBlock> {
+    let label = match scanner.get() {
+        Some(Token::Identifier(s)) => {
+            scanner.skip();
+            scanner.consume(Token::Colon)?;
+            Some(s.clone())
+        }
+        _ => None,
+    };
+    let mut variables = Vec::new();
+    let mut instructions = Vec::new();
+    while let Some(t) = scanner.get() {
+        // if our next token is a right brace or an identifier, this basic block is done
+        if matches!(t, Token::RightBrace | Token::Identifier(_)) {
+            break;
+        }
+        if let Ok((var, rest)) = parse_variable(scanner) {
+            variables.push(var);
+            scanner = rest;
+        } else {
+            let (inst, rest) = parse_instruction(scanner)?;
+            instructions.push(inst);
+            scanner = rest;
+        }
+    }
+    Ok((BasicBlock {
+        label,
+        variables,
+        instructions,
+    }, scanner))
+}
+
+fn parse_function_body(mut scanner: Scanner) -> ParseResult<Vec<BasicBlock>> {
+    scanner.consume(Token::LeftBrace)?; // Consume the left brace
+    let mut basic_blocks = Vec::new();
+    loop {
+        if let Some(Token::RightBrace) = scanner.get() {
+            scanner.skip();
+            break Ok((basic_blocks, scanner))
+        }
+        match parse_basic_block(scanner) {
+            Ok((basic_block, rest)) => {
+                basic_blocks.push(basic_block);
+                scanner = rest;
+            }
+            Err(e) => break Err(e),
+        }
+    }
 }
 
 fn parse_function_param(mut scanner: Scanner) -> ParseResult<FunctionParam> {
-    Err(ParseErr::UnexpectedEof)
+    let ident = loop {
+        match scanner.pop() {
+            Some(Token::Identifier(s)) => break s.clone(),
+            // Some(token) => return Err(ParseErr::UnexpectedToken(token)),
+            Some(_) => {},
+            None => return Err(ParseErr::UnexpectedEof),
+        }
+    };
+
+    match scanner.get() {
+        Some(Token::Comma) => {
+            scanner.skip();
+            Ok((FunctionParam { ident }, scanner))
+        }
+        Some(Token::RightParen) => Ok((FunctionParam { ident }, scanner)),
+        Some(token) => Err(ParseErr::UnexpectedToken(token)),
+        None => Err(ParseErr::UnexpectedEof),
+    }
 }
 
 fn parse_function_params(mut scanner: Scanner) -> ParseResult<Vec<FunctionParam>> {
@@ -336,7 +538,10 @@ fn parse_function_params(mut scanner: Scanner) -> ParseResult<Vec<FunctionParam>
     let mut params = Vec::new();
     loop {
         match scanner.get() {
-            Some(Token::RightParen) => break Ok((params, scanner)),
+            Some(Token::RightParen) => {
+                scanner.skip();
+                break Ok((params, scanner))
+            },
             Some(_) => {
                 let (param, rest) = parse_function_param(scanner)?;
                 params.push(param);
@@ -376,7 +581,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let Ok(tokens) = Token::lexer(&contents).collect::<Result<Vec<_>, _>>() else {
         panic!("Failed to lex file");
     };
-    dbg!(&tokens);
+    // dbg!(&tokens);
     let module = match parse_program(Scanner::new(&tokens)) {
         Ok(m) => m,
         Err(e) => panic!("Failed to parse file: {}", e),
