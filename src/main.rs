@@ -34,6 +34,8 @@ enum Token {
     Shared,
     #[token(".const")]
     Const,
+    #[token(".align")]
+    Align,
 
     #[token(".b64")]
     Bit64,
@@ -251,6 +253,9 @@ struct Function {
 #[derive(Debug)]
 struct FunctionParam {
     ident: Ident,
+    ty: Type,
+    alignment: Option<u32>,
+    array_bounds: Vec<u32>,
 }
 
 #[derive(Debug)]
@@ -304,6 +309,7 @@ struct Variable {
     ty: Type,
     vector: Option<Vector>,
     ident: Ident,
+    alignment: Option<u32>,
     array_bounds: Vec<u32>,
     multiplicity: Option<u32>,
 }
@@ -368,7 +374,7 @@ enum InstructionSpecifier {
 fn parse_program(scanner: Scanner) -> Result<Module, ParseErr> {
     let (module, scanner) = parse_module(scanner)?;
     match scanner.get() {
-        Some(token) => match parse_function(scanner) {
+        Some(_) => match parse_function(scanner) {
             Ok((function, _)) => {
                 panic!(
                     "Function failed to parse in module but succeeded by itself: {:?}",
@@ -480,6 +486,15 @@ fn parse_state_space(mut scanner: Scanner) -> ParseResult<StateSpace> {
     }
 }
 
+fn parse_alignment(mut scanner: Scanner) -> ParseResult<u32> {
+    scanner.consume(Token::Align)?;
+    let alignment = match scanner.must_pop()? {
+        Token::Integer(i) => *i as u32,
+        t => return Err(ParseErr::UnexpectedToken(t)),
+    };
+    Ok((alignment, scanner))
+}
+
 fn parse_type(mut scanner: Scanner) -> ParseResult<Type> {
     let ty = match scanner.must_pop()? {
         Token::Bit32 => Type::Bit32,
@@ -528,6 +543,11 @@ fn parse_mode(mut scanner: Scanner) -> ParseResult<Mode> {
 fn parse_variable(scanner: Scanner) -> ParseResult<Variable> {
     let (state_space, mut scanner) = parse_state_space(scanner)?;
 
+    let alignment = parse_alignment(scanner).map(|(alignment, res)| {
+        scanner = res;
+        alignment
+    }).ok();
+
     let vector = match scanner.get() {
         Some(Token::V2) => {
             scanner.skip();
@@ -564,6 +584,7 @@ fn parse_variable(scanner: Scanner) -> ParseResult<Variable> {
             state_space,
             ty,
             vector,
+            alignment,
             array_bounds,
             ident,
             multiplicity,
@@ -626,21 +647,25 @@ fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifi
             let (from, scanner) = parse_type(scanner)?;
             Ok((InstructionSpecifier::Convert { to, from }, scanner))
         }
-        Token::ConvertAddress => {
-            match scanner.get() {
-                Some(Token::To) => {
-                    scanner.skip();
-                    let (state_space, scanner) = parse_state_space(scanner)?;
-                    let (ty, scanner) = parse_type(scanner)?;
-                    Ok((InstructionSpecifier::ConvertAddressTo(ty, state_space), scanner))
-                }
-                _ => {
-                    let (state_space, scanner) = parse_state_space(scanner)?;
-                    let (ty, scanner) = parse_type(scanner)?;
-                    Ok((InstructionSpecifier::ConvertAddress(ty, state_space), scanner))
-                }
+        Token::ConvertAddress => match scanner.get() {
+            Some(Token::To) => {
+                scanner.skip();
+                let (state_space, scanner) = parse_state_space(scanner)?;
+                let (ty, scanner) = parse_type(scanner)?;
+                Ok((
+                    InstructionSpecifier::ConvertAddressTo(ty, state_space),
+                    scanner,
+                ))
             }
-        }
+            _ => {
+                let (state_space, scanner) = parse_state_space(scanner)?;
+                let (ty, scanner) = parse_type(scanner)?;
+                Ok((
+                    InstructionSpecifier::ConvertAddress(ty, state_space),
+                    scanner,
+                ))
+            }
+        },
         Token::SetPredicate => {
             let (pred, scanner) = parse_predicate(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
@@ -766,6 +791,14 @@ fn parse_function_body(mut scanner: Scanner) -> ParseResult<Vec<BasicBlock>> {
 }
 
 fn parse_function_param(mut scanner: Scanner) -> ParseResult<FunctionParam> {
+    scanner.consume(Token::Param)?; // Consume the param keyword
+
+    let alignment = parse_alignment(scanner).map(|(alignment, res)| {
+        scanner = res;
+        alignment
+    }).ok();
+
+    let (ty, mut scanner) = parse_type(scanner)?;
     let ident = loop {
         match scanner.pop() {
             Some(Token::Identifier(s)) => break s.clone(),
@@ -775,12 +808,15 @@ fn parse_function_param(mut scanner: Scanner) -> ParseResult<FunctionParam> {
         }
     };
 
+    let (array_bounds, mut scanner) = parse_array_bounds(scanner)?;
+
+    let fparam = FunctionParam { alignment, ident, ty, array_bounds };
     match scanner.get() {
         Some(Token::Comma) => {
             scanner.skip();
-            Ok((FunctionParam { ident }, scanner))
+            Ok((fparam, scanner))
         }
-        Some(Token::RightParen) => Ok((FunctionParam { ident }, scanner)),
+        Some(Token::RightParen) => Ok((fparam, scanner)),
         Some(token) => Err(ParseErr::UnexpectedToken(token)),
         None => Err(ParseErr::UnexpectedEof),
     }
