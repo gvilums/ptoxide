@@ -282,6 +282,7 @@ struct Variable {
     ty: Type,
     vector: Option<Vector>,
     ident: Ident,
+    array_bounds: Vec<u32>,
     multiplicity: Option<u32>,
 }
 
@@ -303,7 +304,7 @@ enum Operand {
 struct Instruction {
     guard: Option<Ident>,
     specifier: InstructionSpecifier,
-    ops: Vec<Operand>,
+    operands: Vec<Operand>,
 }
 
 #[derive(Debug)]
@@ -335,7 +336,13 @@ fn parse_version(mut scanner: Scanner) -> ParseResult<Version> {
     let Token::Integer(minor) = minor else {
         return Err(ParseErr::UnexpectedToken(minor));
     };
-    Ok((Version { major: *major, minor: *minor }, scanner))
+    Ok((
+        Version {
+            major: *major,
+            minor: *minor,
+        },
+        scanner,
+    ))
 }
 
 fn parse_target(mut scanner: Scanner) -> ParseResult<String> {
@@ -389,6 +396,22 @@ fn parse_functions(mut scanner: Scanner) -> ParseResult<Vec<Function>> {
     }
 }
 
+fn parse_array_bounds(mut scanner: Scanner) -> ParseResult<Vec<u32>> {
+    let mut bounds = Vec::new();
+    loop {
+        match scanner.get() {
+            Some(Token::RightBracket) => scanner.skip(),
+            _ => break Ok((bounds, scanner)),
+        }
+        let Token::Integer(bound) = scanner.must_pop()? else {
+            return Err(ParseErr::UnexpectedToken(scanner.must_get()?));
+        };
+        scanner.consume(Token::LeftBracket)?;
+        // todo clean up raw casts
+        bounds.push(*bound as u32);
+    }
+}
+
 fn parse_variable(mut scanner: Scanner) -> ParseResult<Variable> {
     let state_space = match scanner.must_pop()? {
         Token::Global => StateSpace::Global,
@@ -438,6 +461,8 @@ fn parse_variable(mut scanner: Scanner) -> ParseResult<Variable> {
         _ => None,
     };
 
+    let (array_bounds, mut scanner) = parse_array_bounds(scanner)?;
+
     scanner.consume(Token::Semicolon)?;
 
     Ok((
@@ -445,6 +470,7 @@ fn parse_variable(mut scanner: Scanner) -> ParseResult<Variable> {
             state_space,
             ty,
             vector,
+            array_bounds,
             ident,
             multiplicity,
         },
@@ -487,11 +513,14 @@ fn parse_basic_block(mut scanner: Scanner) -> ParseResult<BasicBlock> {
             scanner = rest;
         }
     }
-    Ok((BasicBlock {
-        label,
-        variables,
-        instructions,
-    }, scanner))
+    Ok((
+        BasicBlock {
+            label,
+            variables,
+            instructions,
+        },
+        scanner,
+    ))
 }
 
 fn parse_function_body(mut scanner: Scanner) -> ParseResult<Vec<BasicBlock>> {
@@ -500,7 +529,7 @@ fn parse_function_body(mut scanner: Scanner) -> ParseResult<Vec<BasicBlock>> {
     loop {
         if let Some(Token::RightBrace) = scanner.get() {
             scanner.skip();
-            break Ok((basic_blocks, scanner))
+            break Ok((basic_blocks, scanner));
         }
         match parse_basic_block(scanner) {
             Ok((basic_block, rest)) => {
@@ -517,7 +546,7 @@ fn parse_function_param(mut scanner: Scanner) -> ParseResult<FunctionParam> {
         match scanner.pop() {
             Some(Token::Identifier(s)) => break s.clone(),
             // Some(token) => return Err(ParseErr::UnexpectedToken(token)),
-            Some(_) => {},
+            Some(_) => {}
             None => return Err(ParseErr::UnexpectedEof),
         }
     };
@@ -540,13 +569,13 @@ fn parse_function_params(mut scanner: Scanner) -> ParseResult<Vec<FunctionParam>
         match scanner.get() {
             Some(Token::RightParen) => {
                 scanner.skip();
-                break Ok((params, scanner))
-            },
+                break Ok((params, scanner));
+            }
             Some(_) => {
                 let (param, rest) = parse_function_param(scanner)?;
                 params.push(param);
                 scanner = rest;
-            },
+            }
             None => return Err(ParseErr::UnexpectedEof),
         }
     }
@@ -567,13 +596,16 @@ fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
     let (params, scanner) = parse_function_params(scanner)?;
     let (basic_blocks, scanner) = parse_function_body(scanner)?;
 
-    Ok((Function{
-        ident,
-        visible,
-        entry,
-        params,
-        basic_blocks,
-    }, scanner))
+    Ok((
+        Function {
+            ident,
+            visible,
+            entry,
+            params,
+            basic_blocks,
+        },
+        scanner,
+    ))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
