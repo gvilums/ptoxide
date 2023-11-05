@@ -1,3 +1,5 @@
+pub mod vm;
+
 use std::fs;
 
 use logos::{Lexer, Logos};

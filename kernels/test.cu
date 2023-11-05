@@ -1,4 +1,4 @@
-__device__ float add_op(float a, float b) {
+__device__ __noinline__ float add_op(float a, float b) {
     return a + b;
 }
 
