@@ -12,7 +12,16 @@ pub enum MemStateSpace {
 
 #[derive(Clone, Copy, Debug)]
 pub enum RegType {
+    Predicate,
     U64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum PredicateOp {
+    LessThan,
+    LessThanEqual,
+    Equal,
+    NotEqual,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -34,8 +43,30 @@ pub enum AddrOperand {
 pub enum Instruction {
     Load(MemStateSpace, RegOperand, AddrOperand),
     Store(MemStateSpace, RegOperand, AddrOperand),
-    Move { ty: RegType, dst: RegOperand, src: RegOperand },
-    Add { ty: RegType, dst: RegOperand, a: RegOperand, b: RegOperand },
+    Move {
+        ty: RegType,
+        dst: RegOperand,
+        src: RegOperand,
+    },
+    Add {
+        ty: RegType,
+        dst: RegOperand,
+        a: RegOperand,
+        b: RegOperand,
+    },
+    SetPredicate {
+        op: PredicateOp,
+        dst: RegOperand,
+        a: RegOperand,
+        b: RegOperand,
+    },
+    Jump {
+        offset: isize,
+    },
+    JumpIf {
+        cond: RegOperand,
+        offset: isize,
+    },
     Return,
 }
 
@@ -197,7 +228,7 @@ impl Context {
 
         let desc = self.descriptors[desc_id];
         if param_data.len() != desc.arg_size {
-            return Err(())
+            return Err(());
         }
         state.stack_data.resize(desc.arg_size, 0);
         state.stack_data.copy_from_slice(param_data);
@@ -231,7 +262,12 @@ impl Context {
                         }
                     }
                 }
-                Instruction::Add { ty: _, dst, a: src1, b: src2 } => {
+                Instruction::Add {
+                    ty: _,
+                    dst,
+                    a: src1,
+                    b: src2,
+                } => {
                     let value1 = state.get_u64(src1);
                     let value2 = state.get_u64(src2);
                     state.set_u64(dst, value1 + value2);
@@ -239,6 +275,9 @@ impl Context {
                 Instruction::Move { ty: _, dst, src } => {
                     let value = state.get_u64(src);
                     state.set_u64(dst, value);
+                }
+                Instruction::SetPredicate { op, dst, a, b } => {
+
                 }
                 Instruction::Return => state.frame_teardown(),
             }
@@ -256,23 +295,41 @@ mod test {
             program: vec![
                 Instruction::Load(
                     MemStateSpace::Global,
-                    RegOperand { ty: RegType::U64, id: 0 },
+                    RegOperand {
+                        ty: RegType::U64,
+                        id: 0,
+                    },
                     AddrOperand::Absolute(0),
                 ),
                 Instruction::Load(
                     MemStateSpace::Global,
-                    RegOperand { ty: RegType::U64, id: 1 },
+                    RegOperand {
+                        ty: RegType::U64,
+                        id: 1,
+                    },
                     AddrOperand::Absolute(8),
                 ),
-                Instruction::Add{
+                Instruction::Add {
                     ty: RegType::U64,
-                    dst: RegOperand { ty: RegType::U64, id: 0 },
-                    a: RegOperand { ty: RegType::U64, id: 0 },
-                    b: RegOperand { ty: RegType::U64, id: 1 },
+                    dst: RegOperand {
+                        ty: RegType::U64,
+                        id: 0,
+                    },
+                    a: RegOperand {
+                        ty: RegType::U64,
+                        id: 0,
+                    },
+                    b: RegOperand {
+                        ty: RegType::U64,
+                        id: 1,
+                    },
                 },
                 Instruction::Store(
                     MemStateSpace::Global,
-                    RegOperand { ty: RegType::U64, id: 0 },
+                    RegOperand {
+                        ty: RegType::U64,
+                        id: 0,
+                    },
                     AddrOperand::Absolute(16),
                 ),
                 Instruction::Return,
@@ -284,7 +341,7 @@ mod test {
                 regs: RegDesc {
                     b64_count: 2,
                     ..Default::default()
-                }
+                },
             }],
         };
         let mut mem = vec![0u8; 24];
@@ -300,23 +357,41 @@ mod test {
             program: vec![
                 Instruction::Load(
                     MemStateSpace::Stack,
-                    RegOperand { ty: RegType::U64, id: 0 },
+                    RegOperand {
+                        ty: RegType::U64,
+                        id: 0,
+                    },
                     AddrOperand::StackRelative(-16),
                 ),
                 Instruction::Load(
                     MemStateSpace::Stack,
-                    RegOperand { ty: RegType::U64, id: 1 },
+                    RegOperand {
+                        ty: RegType::U64,
+                        id: 1,
+                    },
                     AddrOperand::StackRelative(-8),
                 ),
-                Instruction::Add{
+                Instruction::Add {
                     ty: RegType::U64,
-                    dst: RegOperand { ty: RegType::U64, id: 0 },
-                    a: RegOperand { ty: RegType::U64, id: 0 },
-                    b: RegOperand { ty: RegType::U64, id: 1 },
+                    dst: RegOperand {
+                        ty: RegType::U64,
+                        id: 0,
+                    },
+                    a: RegOperand {
+                        ty: RegType::U64,
+                        id: 0,
+                    },
+                    b: RegOperand {
+                        ty: RegType::U64,
+                        id: 1,
+                    },
                 },
                 Instruction::Store(
                     MemStateSpace::Global,
-                    RegOperand { ty: RegType::U64, id: 0 },
+                    RegOperand {
+                        ty: RegType::U64,
+                        id: 0,
+                    },
                     AddrOperand::Absolute(0),
                 ),
                 Instruction::Return,
@@ -328,7 +403,7 @@ mod test {
                 regs: RegDesc {
                     b64_count: 2,
                     ..Default::default()
-                }
+                },
             }],
         };
         let mut mem = vec![0u8; 8];
