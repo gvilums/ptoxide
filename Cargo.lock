@@ -56,7 +56,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ptxemu"
+name = "ptoxide"
 version = "0.1.0"
 dependencies = [
  "logos",
