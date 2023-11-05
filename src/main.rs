@@ -3,10 +3,17 @@ use std::fs;
 use logos::{Lexer, Logos};
 use thiserror::Error;
 
-fn reg_multiplicity(lex: &mut Lexer<Token>) -> Option<u32> {
+fn lex_reg_multiplicity(lex: &mut Lexer<Token>) -> Option<u32> {
     let mut s = lex.slice();
     s = &s[1..s.len() - 1];
     s.parse().ok()
+}
+
+fn lex_version_number(lex: &mut Lexer<Token>) -> Option<Version> {
+    let (major_str, minor_str) = lex.slice().split_once('.')?;
+    let major = major_str.parse().ok()?;
+    let minor = minor_str.parse().ok()?;
+    Some(Version { major, minor })
 }
 
 #[derive(Logos, Debug, PartialEq, Clone)]
@@ -160,7 +167,7 @@ enum Token {
     #[regex(r"[0-9]+", |lex| lex.slice().parse().ok())]
     Integer(i32),
 
-    #[regex(r"<\s*\+?\d+\s*>", reg_multiplicity)]
+    #[regex(r"<\s*\+?\d+\s*>", lex_reg_multiplicity)]
     RegMultiplicity(u32),
 
     #[token("{")]
@@ -185,8 +192,9 @@ enum Token {
     Colon,
     #[token(",")]
     Comma,
-    #[token(".")]
-    Dot,
+
+    #[regex(r"\d+\.\d+", lex_version_number)]
+    VersionNumber(Version),
 
     #[regex(r"//.*", logos::skip)]
     Skip,
@@ -249,7 +257,7 @@ impl<'a> Scanner<'a> {
 
 type Ident = String;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Version {
     major: i32,
     minor: i32,
@@ -430,22 +438,10 @@ fn parse_program(scanner: Scanner) -> Result<Module, ParseErr> {
 
 fn parse_version(mut scanner: Scanner) -> ParseResult<Version> {
     scanner.consume(Token::Version)?;
-    let major = scanner.pop().ok_or(ParseErr::UnexpectedEof)?;
-    let Token::Integer(major) = major else {
-        return Err(ParseErr::UnexpectedToken(major));
-    };
-    scanner.consume(Token::Dot)?;
-    let minor = scanner.pop().ok_or(ParseErr::UnexpectedEof)?;
-    let Token::Integer(minor) = minor else {
-        return Err(ParseErr::UnexpectedToken(minor));
-    };
-    Ok((
-        Version {
-            major: *major,
-            minor: *minor,
-        },
-        scanner,
-    ))
+    match scanner.must_pop()? {
+        Token::VersionNumber(version) => Ok((*version, scanner)),
+        t => Err(ParseErr::UnexpectedToken(t)),
+    }
 }
 
 fn parse_target(mut scanner: Scanner) -> ParseResult<String> {
@@ -945,3 +941,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     dbg!(module);
     Ok(())
 }
+
+// generic address is 64 bits, of which the upper 3 bits denote the space
+// the lower 61 bits denote the address in that space
+
+// addresses specific to a space _do not_ have the space bits set.
+// instead, they are simply offsets into the space
+
+// memory layout design
+// each state space is repsented in the virtual machine as a contiguous block of memory
+// allocated in a rust-native structure, such as a Vec
+//
+// the exception to this is the register space. registers of each type are allocated
+// 
