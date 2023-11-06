@@ -267,12 +267,24 @@ pub enum VmError {
     SliceSizeMismatch(#[from] std::array::TryFromSliceError),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct DevicePointer(u64);
+
+pub enum Argument {
+    Ptr(DevicePointer),
+    Value(Vec<u8>),
+}
+
+
 impl Context {
     fn fetch_instr(&self, iptr: IPtr) -> Instruction {
         self.program[iptr.0]
     }
 
-    pub fn new(program: Vec<Instruction>, descriptors: Vec<FuncFrameDesc>) -> Context {
+    pub fn new(
+        program: Vec<Instruction>,
+        descriptors: Vec<FuncFrameDesc>,
+    ) -> Context {
         Context {
             global_mem: Vec::new(),
             program,
@@ -280,30 +292,47 @@ impl Context {
         }
     }
 
-    pub fn write_global(&mut self, addr: usize, data: &[u8]) {
-        if addr + data.len() > self.global_mem.len() {
-            self.global_mem.resize(addr + data.len(), 0);
-        }
-        self.global_mem[addr..addr + data.len()].copy_from_slice(data);
+    pub fn alloc(&mut self, size: usize) -> DevicePointer {
+        let ptr = self.global_mem.len();
+        self.global_mem.resize(ptr + size, 0);
+        DevicePointer(ptr as u64)
     }
 
-    pub fn read_global(&self, addr: usize, data: &mut [u8]) {
-        data.copy_from_slice(&self.global_mem[addr..addr + data.len()]);
+    pub fn write(&mut self, ptr: DevicePointer, offset: usize, data: &[u8]) {
+        let begin = ptr.0 as usize + offset;
+        let end = begin + data.len();
+        self.global_mem[begin..end].copy_from_slice(data);
     }
 
-    pub fn read_global_val<const N: usize>(&self, addr: usize) -> [u8; N] {
-        self.global_mem[addr..addr + N].try_into().unwrap()
+    pub fn read(&mut self, ptr: DevicePointer, offset: usize, data: &mut [u8]) {
+        let begin = ptr.0 as usize + offset;
+        let end = begin + data.len();
+        data.copy_from_slice(&self.global_mem[begin..end]);
     }
 
-    pub fn run(&mut self, desc_id: usize, param_data: &[u8]) -> Result<(), VmError> {
+    pub fn run(&mut self, desc_id: usize, args: &[Argument]) -> Result<(), VmError> {
         let mut state = ThreadState::new();
 
         let desc = self.descriptors[desc_id];
-        if param_data.len() != desc.arg_size {
+        let arg_size: usize = args.iter().map(|arg| match arg {
+            Argument::Ptr(_) => std::mem::size_of::<u64>(),
+            Argument::Value(v) => v.len(),
+        }).sum();
+        if arg_size != desc.arg_size {
             return Err(VmError::ParamDataSizeMismatch);
         }
-        state.stack_data.resize(desc.arg_size, 0);
-        state.stack_data.copy_from_slice(param_data);
+        state.stack_data.reserve(desc.arg_size);
+        for arg in args {
+            match arg {
+                Argument::Ptr(ptr) => {
+                    let ptr_bytes = ptr.0.to_ne_bytes();
+                    state.stack_data.extend_from_slice(&ptr_bytes);
+                }
+                Argument::Value(v) => {
+                    state.stack_data.extend_from_slice(v);
+                }
+            }
+        }
         state.frame_setup(desc);
 
         while state.num_frames() > 0 {
@@ -344,14 +373,17 @@ impl Context {
                         RegOperand::B128(r) => todo!(),
                     }
                 }
-                Instruction::Add { ty: _, dst, a, b } => {
+                Instruction::Add { ty, dst, a, b } => {
                     use RegOperand::*;
                     match (dst, a, b) {
-                        (B64(dst), B64(a), B64(b)) => {
-                            let a = u64::from_ne_bytes(state.get_b64(a));
-                            let b = u64::from_ne_bytes(state.get_b64(b));
-                            state.set_b64(dst, (a + b).to_ne_bytes());
-                        }
+                        (B64(dst), B64(a), B64(b)) => match ty {
+                            Type::U64 => {
+                                let a = u64::from_ne_bytes(state.get_b64(a));
+                                let b = u64::from_ne_bytes(state.get_b64(b));
+                                state.set_b64(dst, (a + b).to_ne_bytes());
+                            },
+                            _ => todo!(),
+                        },
                         _ => todo!(),
                     }
                 }
@@ -389,88 +421,66 @@ mod test {
     #[test]
     fn simple() {
         let prog = vec![
+            // load arguments into registers
             Instruction::Load(
-                MemStateSpace::Global,
+                MemStateSpace::Stack,
                 RegOperand::B64(Reg64 { id: 0 }),
-                AddrOperand::Absolute(0),
+                AddrOperand::StackRelative(-24),
+            ),
+            Instruction::Load(
+                MemStateSpace::Stack,
+                RegOperand::B64(Reg64 { id: 1 }),
+                AddrOperand::StackRelative(-16),
+            ),
+            Instruction::Load(
+                MemStateSpace::Stack,
+                RegOperand::B64(Reg64 { id: 2 }),
+                AddrOperand::StackRelative(-8),
+            ),
+            // load values from memory (pointed to by arguments)
+            Instruction::Load(
+                MemStateSpace::Global,
+                RegOperand::B64(Reg64 { id: 3 }),
+                AddrOperand::RegisterRelative(Reg64 { id: 0 }, 0),
             ),
             Instruction::Load(
                 MemStateSpace::Global,
-                RegOperand::B64(Reg64 { id: 1 }),
-                AddrOperand::Absolute(8),
+                RegOperand::B64(Reg64 { id: 4 }),
+                AddrOperand::RegisterRelative(Reg64 { id: 1 }, 0),
             ),
+            // add values
             Instruction::Add {
                 ty: Type::U64,
-                dst: RegOperand::B64(Reg64 { id: 0 }),
-                a: RegOperand::B64(Reg64 { id: 0 }),
-                b: RegOperand::B64(Reg64 { id: 1 }),
+                dst: RegOperand::B64(Reg64 { id: 5 }),
+                a: RegOperand::B64(Reg64 { id: 3 }),
+                b: RegOperand::B64(Reg64 { id: 4 }),
             },
+            // store result
             Instruction::Store(
                 MemStateSpace::Global,
-                RegOperand::B64(Reg64 { id: 0 }),
-                AddrOperand::Absolute(16),
+                RegOperand::B64(Reg64 { id: 5 }),
+                AddrOperand::RegisterRelative(Reg64 { id: 2 }, 0),
             ),
             Instruction::Return,
         ];
         let desc = vec![FuncFrameDesc {
             iptr: IPtr(0),
             frame_size: 0,
-            arg_size: 0,
+            arg_size: 24,
             regs: RegDesc {
-                b64_count: 2,
+                b64_count: 6,
                 ..Default::default()
             },
         }];
         let mut ctx = Context::new(prog, desc);
-        ctx.write_global(0, &1u64.to_ne_bytes());
-        ctx.write_global(8, &2u64.to_ne_bytes());
-        ctx.write_global(16, &0u64.to_ne_bytes());
-        ctx.run(0, &[]).unwrap();
-        assert_eq!(ctx.read_global_val(16), 3u64.to_ne_bytes());
+        let a = ctx.alloc(8);
+        let b = ctx.alloc(8);
+        let c = ctx.alloc(8);
+        ctx.write(a, 0, &1u64.to_ne_bytes());
+        ctx.write(b, 0, &2u64.to_ne_bytes());
+        ctx.run(0, &[Argument::Ptr(a), Argument::Ptr(b), Argument::Ptr(c)]).unwrap();
+        let mut res = [0u8; 8];
+        ctx.read(c, 0, &mut res);
+        assert_eq!(u64::from_ne_bytes(res), 3);
     }
-
-    // #[test]
-    // fn simple_with_args() {
-    //     let ctx = Context {
-    //         program: vec![
-    //             Instruction::Load(
-    //                 MemStateSpace::Stack,
-    //                 RegOperand::B64(Reg64 { id: 0 }),
-    //                 AddrOperand::StackRelative(-16),
-    //             ),
-    //             Instruction::Load(
-    //                 MemStateSpace::Stack,
-    //                 RegOperand::B64(Reg64 { id: 1 }),
-    //                 AddrOperand::StackRelative(-8),
-    //             ),
-    //             Instruction::Add {
-    //                 ty: Type::U64,
-    //                 dst: RegOperand::B64(Reg64 { id: 0 }),
-    //                 a: RegOperand::B64(Reg64 { id: 0 }),
-    //                 b: RegOperand::B64(Reg64 { id: 1 }),
-    //             },
-    //             Instruction::Store(
-    //                 MemStateSpace::Global,
-    //                 RegOperand::B64(Reg64 { id: 0 }),
-    //                 AddrOperand::Absolute(0),
-    //             ),
-    //             Instruction::Return,
-    //         ],
-    //         descriptors: vec![FuncFrameDesc {
-    //             iptr: IPtr(0),
-    //             frame_size: 0,
-    //             arg_size: 16,
-    //             regs: RegDesc {
-    //                 b64_count: 2,
-    //                 ..Default::default()
-    //             },
-    //         }],
-    //     };
-    //     let mut mem = vec![0u8; 8];
-    //     let mut param_mem = vec![0u8; 16];
-    //     store_u64(&mut param_mem, 0, 1);
-    //     store_u64(&mut param_mem, 8, 2);
-    //     ctx.run(0, &mut mem, &param_mem).unwrap();
-    //     assert_eq!(load_u64(&mem, 0), 3);
-    // }
 }
