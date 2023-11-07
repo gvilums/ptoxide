@@ -42,7 +42,6 @@ pub struct Reg128 {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Type {
-    Pred,
     B32,
     U32,
     S32,
@@ -102,6 +101,12 @@ pub enum AddrOperand {
 pub enum Instruction {
     Load(MemStateSpace, RegOperand, AddrOperand),
     Store(MemStateSpace, RegOperand, AddrOperand),
+    Convert {
+        dst_type: Type,
+        src_type: Type,
+        dst: RegOperand,
+        src: RegOperand,
+    },
     Move {
         ty: Type,
         dst: RegOperand,
@@ -116,12 +121,7 @@ pub enum Instruction {
     },
     Mul(Type, MulMode, RegOperand, RegOperand, RegOperand),
     ShiftLeft(Type, RegOperand, RegOperand, RegOperand),
-    SetPredicate {
-        op: PredicateOp,
-        dst: RegOperand,
-        a: RegOperand,
-        b: RegOperand,
-    },
+    SetPredicate(Type, PredicateOp, RegOperand, RegOperand, RegOperand),
     Jump {
         offset: isize,
     },
@@ -532,6 +532,21 @@ impl Context {
                         _ => todo!(),
                     }
                 }
+                Instruction::Convert {
+                    dst_type,
+                    src_type,
+                    dst,
+                    src,
+                } => {
+                    use RegOperand::*;
+                    match (dst_type, src_type, dst, src) {
+                        (Type::U64, Type::U32, B64(dst), B32(src)) => {
+                            let val = u32::from_ne_bytes(state.get_b32(src)) as u64;
+                            state.set_b64(dst, val.to_ne_bytes());
+                        }
+                        _ => todo!(),
+                    }
+                }
                 Instruction::Move { ty: _, dst, src } => {
                     use RegOperand::*;
                     match (dst, src) {
@@ -568,8 +583,24 @@ impl Context {
                         _ => todo!(),
                     }
                 }
-                Instruction::SetPredicate { op, dst, a, b } => {
-                    todo!()
+                Instruction::SetPredicate (ty,  op, dst, a, b ) => {
+                    let RegOperand::Pred(dst) = dst else {
+                        return Err(VmError::InvalidOperand(inst, dst));
+                    };
+                    match (ty, a, b) {
+                        (Type::U64, RegOperand::B64(a), RegOperand::B64(b)) => {
+                            let a = u64::from_ne_bytes(state.get_b64(a));
+                            let b = u64::from_ne_bytes(state.get_b64(b));
+                            let value = match op {
+                                PredicateOp::LessThan => a < b,
+                                PredicateOp::LessThanEqual => a <= b,
+                                PredicateOp::Equal => a == b,
+                                PredicateOp::NotEqual => a != b,
+                            };
+                            state.set_pred(dst, value);
+                        }
+                        _ => todo!()
+                    }
                 }
                 Instruction::Jump { offset } => {
                     state.iptr.0 = (state.iptr.0 as isize + offset) as usize;
