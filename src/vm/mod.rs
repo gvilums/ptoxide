@@ -67,6 +67,7 @@ pub enum MulMode {
 
 #[derive(Clone, Copy, Debug)]
 pub enum SpecialReg {
+    NCtaIdX,
     CtaIdX,
     NTIdX,
     TIdX,
@@ -553,24 +554,18 @@ impl Context {
                         (B64(dst), B64(src)) => {
                             state.set_b64(dst, state.get_b64(src));
                         }
-                        (B64(dst), Special(SpecialReg::TIdX)) => {
-                            state.set_b64(dst, (tid.0 as u64).to_ne_bytes());
+                        (B32(dst), Special(SpecialReg::TIdX)) => {
+                            state.set_b32(dst, tid.0.to_ne_bytes());
                         }
-                        (B64(dst), Special(SpecialReg::NTIdX)) => {
-                            state.set_b64(dst, (ntid.0 as u64).to_ne_bytes());
+                        (B32(dst), Special(SpecialReg::NTIdX)) => {
+                            state.set_b32(dst, ntid.0.to_ne_bytes());
                         }
-                        (B64(dst), Special(SpecialReg::CtaIdX)) => {
-                            state.set_b64(dst, 0u64.to_ne_bytes());
+                        (B32(dst), Special(SpecialReg::CtaIdX)) => {
+                            state.set_b32(dst, ctaid.0.to_ne_bytes());
                         }
-                        // (B32(dst), Special(SpecialReg::TIdX)) => {
-                        //     state.set_b32(dst, params.block_dim.0.to_ne_bytes());
-                        // }
-                        // (B32(dst), Special(SpecialReg::NTIdX)) => {
-                        //     state.set_b32(dst, params.block_dim.0.to_ne_bytes());
-                        // }
-                        // (B32(dst), Special(SpecialReg::CtaIdX)) => {
-                        //     state.set_b32(dst, params.block_dim.0.to_ne_bytes());
-                        // }
+                        (B32(dst), Special(SpecialReg::NCtaIdX)) => {
+                            state.set_b32(dst, nctaid.0.to_ne_bytes());
+                        }
                         _ => todo!(),
                     }
                 }
@@ -757,8 +752,14 @@ mod test {
             // load thread index
             Instruction::Move {
                 ty: Type::U64,
-                dst: RegOperand::B64(Reg64 { id: 6 }),
+                dst: RegOperand::B32(Reg32 { id: 0 }),
                 src: RegOperand::Special(SpecialReg::TIdX),
+            },
+            Instruction::Convert {
+                dst_type: Type::U64,
+                src_type: Type::U32,
+                dst: RegOperand::B64(Reg64 { id: 6 }),
+                src: RegOperand::B32(Reg32 { id: 0 }),
             },
             // multiply thread index by 8 (size of u64)
             Instruction::MoveConst(
@@ -823,6 +824,7 @@ mod test {
             frame_size: 0,
             arg_size: 24,
             regs: RegDesc {
+                b32_count: 1,
                 b64_count: 8,
                 ..Default::default()
             },
