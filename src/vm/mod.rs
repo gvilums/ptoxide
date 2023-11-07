@@ -43,6 +43,10 @@ pub struct Reg128 {
 #[derive(Clone, Copy, Debug)]
 pub enum Type {
     Pred,
+    B32,
+    U32,
+    S32,
+    B64,
     U64,
     S64,
 }
@@ -110,13 +114,7 @@ pub enum Instruction {
         a: RegOperand,
         b: RegOperand,
     },
-    Mul {
-        ty: Type,
-        mode: MulMode,
-        dst: RegOperand,
-        a: RegOperand,
-        b: RegOperand,
-    },
+    Mul(Type, MulMode, RegOperand, RegOperand, RegOperand),
     ShiftLeft(Type, RegOperand, RegOperand, RegOperand),
     SetPredicate {
         op: PredicateOp,
@@ -217,12 +215,44 @@ impl ThreadState {
         self.regs.last_mut().unwrap().pred[reg.id] = value;
     }
 
+    fn get_b8(&self, reg: Reg8) -> [u8; 1] {
+        self.regs.last().unwrap().b8[reg.id]
+    }
+
+    fn set_b8(&mut self, reg: Reg8, value: [u8; 1]) {
+        self.regs.last_mut().unwrap().b8[reg.id] = value;
+    }
+
+    fn get_b16(&self, reg: Reg16) -> [u8; 2] {
+        self.regs.last().unwrap().b16[reg.id]
+    }
+
+    fn set_b16(&mut self, reg: Reg16, value: [u8; 2]) {
+        self.regs.last_mut().unwrap().b16[reg.id] = value;
+    }
+
+    fn get_b32(&self, reg: Reg32) -> [u8; 4] {
+        self.regs.last().unwrap().b32[reg.id]
+    }
+
+    fn set_b32(&mut self, reg: Reg32, value: [u8; 4]) {
+        self.regs.last_mut().unwrap().b32[reg.id] = value;
+    }
+
     fn get_b64(&self, reg: Reg64) -> [u8; 8] {
         self.regs.last().unwrap().b64[reg.id]
     }
 
     fn set_b64(&mut self, reg: Reg64, value: [u8; 8]) {
         self.regs.last_mut().unwrap().b64[reg.id] = value;
+    }
+
+    fn get_b128(&self, reg: Reg128) -> [u8; 16] {
+        self.regs.last().unwrap().b128[reg.id]
+    }
+
+    fn set_b128(&mut self, reg: Reg128, value: [u8; 16]) {
+        self.regs.last_mut().unwrap().b128[reg.id] = value;
     }
 
     fn iptr_fetch_incr(&mut self) -> IPtr {
@@ -280,9 +310,11 @@ impl ThreadState {
 
 #[derive(thiserror::Error, Debug)]
 pub enum VmError {
-    #[error("parameter data did not match descriptor")]
+    #[error("Invalid register operand {:?} for instruction {:?}", .1, .0)]
+    InvalidOperand(Instruction, RegOperand),
+    #[error("Parameter data did not match descriptor")]
     ParamDataSizeMismatch,
-    #[error("slice size mismatch")]
+    #[error("Slice size mismatch")]
     SliceSizeMismatch(#[from] std::array::TryFromSliceError),
 }
 
@@ -357,6 +389,18 @@ impl Context {
         data.copy_from_slice(&self.global_mem[begin..end]);
     }
 
+    fn get_data_ptr<'a>(
+        &'a mut self,
+        space: MemStateSpace,
+        state: &'a mut ThreadState,
+    ) -> &'a mut [u8] {
+        match space {
+            MemStateSpace::Global => self.global_mem.as_mut_slice(),
+            MemStateSpace::Stack => state.stack_data.as_mut_slice(),
+            MemStateSpace::Shared => todo!(),
+        }
+    }
+
     fn run_cta(
         &mut self,
         nctaid: (u32, u32, u32),
@@ -389,7 +433,8 @@ impl Context {
         state.frame_setup(desc);
 
         while state.num_frames() > 0 {
-            match self.fetch_instr(state.iptr_fetch_incr()) {
+            let inst = self.fetch_instr(state.iptr_fetch_incr());
+            match inst {
                 Instruction::Load(space, dst, addr) => {
                     let addr = state.resolve_address(addr);
                     let data = match space {
@@ -398,34 +443,43 @@ impl Context {
                         MemStateSpace::Shared => todo!(),
                     };
                     match dst {
-                        RegOperand::Pred(r) => todo!(),
-                        RegOperand::B8(r) => todo!(),
-                        RegOperand::B16(r) => todo!(),
-                        RegOperand::B32(r) => todo!(),
+                        RegOperand::B8(r) => state.set_b8(r, data[addr..addr + 1].try_into()?),
+                        RegOperand::B16(r) => state.set_b16(r, data[addr..addr + 2].try_into()?),
+                        RegOperand::B32(r) => state.set_b32(r, data[addr..addr + 4].try_into()?),
                         RegOperand::B64(r) => state.set_b64(r, data[addr..addr + 8].try_into()?),
-                        RegOperand::B128(r) => todo!(),
-                        RegOperand::Special(_) => todo!(),
+                        RegOperand::B128(r) => state.set_b128(r, data[addr..addr + 16].try_into()?),
+                        o => return Err(VmError::InvalidOperand(inst, o)),
                     }
                 }
                 Instruction::Store(space, src, addr) => {
                     let addr = state.resolve_address(addr);
-                    // let value = state.get_u64(src);
                     match src {
-                        RegOperand::Pred(r) => todo!(),
-                        RegOperand::B8(r) => todo!(),
-                        RegOperand::B16(r) => todo!(),
-                        RegOperand::B32(r) => todo!(),
+                        RegOperand::B8(r) => {
+                            let val = state.get_b8(r);
+                            self.get_data_ptr(space, &mut state)[addr..addr + 1]
+                                .copy_from_slice(&val);
+                        }
+                        RegOperand::B16(r) => {
+                            let val = state.get_b16(r);
+                            self.get_data_ptr(space, &mut state)[addr..addr + 2]
+                                .copy_from_slice(&val);
+                        }
+                        RegOperand::B32(r) => {
+                            let val = state.get_b32(r);
+                            self.get_data_ptr(space, &mut state)[addr..addr + 4]
+                                .copy_from_slice(&val);
+                        }
                         RegOperand::B64(r) => {
                             let val = state.get_b64(r);
-                            let data = match space {
-                                MemStateSpace::Global => self.global_mem.as_mut_slice(),
-                                MemStateSpace::Stack => state.stack_data.as_mut_slice(),
-                                MemStateSpace::Shared => todo!(),
-                            };
-                            data[addr..addr + 8].copy_from_slice(&val);
+                            self.get_data_ptr(space, &mut state)[addr..addr + 8]
+                                .copy_from_slice(&val);
                         }
-                        RegOperand::B128(r) => todo!(),
-                        RegOperand::Special(_) => todo!(),
+                        RegOperand::B128(r) => {
+                            let val = state.get_b128(r);
+                            self.get_data_ptr(space, &mut state)[addr..addr + 16]
+                                .copy_from_slice(&val);
+                        }
+                        o => return Err(VmError::InvalidOperand(inst, o)),
                     }
                 }
                 Instruction::Add { ty, dst, a, b } => {
@@ -442,7 +496,7 @@ impl Context {
                         _ => todo!(),
                     }
                 }
-                Instruction::Mul { ty, mode, dst, a, b } => {
+                Instruction::Mul(ty, mode, dst, a, b) => {
                     use RegOperand::*;
                     match (mode, dst, a, b) {
                         (MulMode::Low, B64(dst), B64(a), B64(b)) => match ty {
@@ -453,7 +507,15 @@ impl Context {
                             }
                             _ => todo!(),
                         },
-                        _ => todo!()
+                        (MulMode::Low, B32(dst), B32(a), B32(b)) => match ty {
+                            Type::U32 => {
+                                let a = u32::from_ne_bytes(state.get_b32(a));
+                                let b = u32::from_ne_bytes(state.get_b32(b));
+                                state.set_b32(dst, (a * b).to_ne_bytes());
+                            }
+                            _ => todo!(),
+                        },
+                        _ => todo!(),
                     }
                 }
                 Instruction::ShiftLeft(ty, dst, a, b) => {
@@ -467,7 +529,7 @@ impl Context {
                             }
                             _ => todo!(),
                         },
-                        _ => todo!()
+                        _ => todo!(),
                     }
                 }
                 Instruction::Move { ty: _, dst, src } => {
@@ -668,14 +730,18 @@ mod test {
                 src: RegOperand::Special(SpecialReg::TIdX),
             },
             // multiply thread index by 8 (size of u64)
-            Instruction::MoveConst(Type::U64, RegOperand::B64(Reg64 { id: 7 }), Constant::U64(8)),
-            Instruction::Mul {
-                ty: Type::U64,
-                mode: MulMode::Low,
-                dst: RegOperand::B64(Reg64 { id: 6 }),
-                a: RegOperand::B64(Reg64 { id: 6 }),
-                b: RegOperand::B64(Reg64 { id: 7 }),
-            },
+            Instruction::MoveConst(
+                Type::U64,
+                RegOperand::B64(Reg64 { id: 7 }),
+                Constant::U64(8),
+            ),
+            Instruction::Mul(
+                Type::U64,
+                MulMode::Low,
+                RegOperand::B64(Reg64 { id: 6 }),
+                RegOperand::B64(Reg64 { id: 6 }),
+                RegOperand::B64(Reg64 { id: 7 }),
+            ),
             // offset argument pointers by thread index
             Instruction::Add {
                 ty: Type::U64,
