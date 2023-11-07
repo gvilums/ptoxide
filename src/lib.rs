@@ -1,4 +1,5 @@
 pub mod vm;
+pub mod compiler;
 
 use std::fs;
 

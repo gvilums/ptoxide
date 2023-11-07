@@ -56,6 +56,13 @@ pub enum PredicateOp {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub enum MulMode {
+    Low,
+    High,
+    Wide,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum SpecialReg {
     CtaIdX,
     NTIdX,
@@ -74,9 +81,8 @@ pub enum RegOperand {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum Operand {
-    Reg(RegOperand),
-    Const(u64),
+pub enum Constant {
+    U64(u64),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -97,18 +103,21 @@ pub enum Instruction {
         dst: RegOperand,
         src: RegOperand,
     },
+    MoveConst(Type, RegOperand, Constant),
     Add {
         ty: Type,
         dst: RegOperand,
-        a: Operand,
-        b: Operand,
+        a: RegOperand,
+        b: RegOperand,
     },
     Mul {
         ty: Type,
+        mode: MulMode,
         dst: RegOperand,
-        a: Operand,
-        b: Operand,
+        a: RegOperand,
+        b: RegOperand,
     },
+    ShiftLeft(Type, RegOperand, RegOperand, RegOperand),
     SetPredicate {
         op: PredicateOp,
         dst: RegOperand,
@@ -420,10 +429,9 @@ impl Context {
                     }
                 }
                 Instruction::Add { ty, dst, a, b } => {
-                    use Operand::*;
                     use RegOperand::*;
                     match (dst, a, b) {
-                        (B64(dst), Reg(B64(a)), Reg(B64(b))) => match ty {
+                        (B64(dst), B64(a), B64(b)) => match ty {
                             Type::U64 => {
                                 let a = u64::from_ne_bytes(state.get_b64(a));
                                 let b = u64::from_ne_bytes(state.get_b64(b));
@@ -434,11 +442,10 @@ impl Context {
                         _ => todo!(),
                     }
                 }
-                Instruction::Mul { ty, dst, a, b } => {
-                    use Operand::*;
+                Instruction::Mul { ty, mode, dst, a, b } => {
                     use RegOperand::*;
-                    match (dst, a, b) {
-                        (B64(dst), Reg(B64(a)), Reg(B64(b))) => match ty {
+                    match (mode, dst, a, b) {
+                        (MulMode::Low, B64(dst), B64(a), B64(b)) => match ty {
                             Type::U64 => {
                                 let a = u64::from_ne_bytes(state.get_b64(a));
                                 let b = u64::from_ne_bytes(state.get_b64(b));
@@ -446,29 +453,21 @@ impl Context {
                             }
                             _ => todo!(),
                         },
-                        (B64(dst), Reg(B64(a)), Const(b)) => match ty {
-                            Type::U64 => {
-                                let a = u64::from_ne_bytes(state.get_b64(a));
-                                state.set_b64(dst, (a * b).to_ne_bytes());
-                            }
-                            _ => todo!(),
-                        },
-                        _ => todo!(),
+                        _ => todo!()
                     }
                 }
-                Instruction::Mul { ty, dst, a, b } => {
-                    use Operand::*;
+                Instruction::ShiftLeft(ty, dst, a, b) => {
                     use RegOperand::*;
                     match (dst, a, b) {
-                        (B64(dst), Reg(B64(a)), Reg(B64(b))) => match ty {
+                        (B64(dst), B64(a), B64(b)) => match ty {
                             Type::U64 => {
                                 let a = u64::from_ne_bytes(state.get_b64(a));
                                 let b = u64::from_ne_bytes(state.get_b64(b));
-                                state.set_b64(dst, (a + b).to_ne_bytes());
+                                state.set_b64(dst, (a << b).to_ne_bytes());
                             }
                             _ => todo!(),
                         },
-                        _ => todo!(),
+                        _ => todo!()
                     }
                 }
                 Instruction::Move { ty: _, dst, src } => {
@@ -495,6 +494,15 @@ impl Context {
                         // (B32(dst), Special(SpecialReg::CtaIdX)) => {
                         //     state.set_b32(dst, params.block_dim.0.to_ne_bytes());
                         // }
+                        _ => todo!(),
+                    }
+                }
+                Instruction::MoveConst(ty, dst, value) => {
+                    use RegOperand::*;
+                    match (dst, value) {
+                        (B64(dst), Constant::U64(value)) => {
+                            state.set_b64(dst, value.to_ne_bytes());
+                        }
                         _ => todo!(),
                     }
                 }
@@ -598,8 +606,8 @@ mod test {
             Instruction::Add {
                 ty: Type::U64,
                 dst: RegOperand::B64(Reg64 { id: 5 }),
-                a: Operand::Reg(RegOperand::B64(Reg64 { id: 3 })),
-                b: Operand::Reg(RegOperand::B64(Reg64 { id: 4 })),
+                a: RegOperand::B64(Reg64 { id: 3 }),
+                b: RegOperand::B64(Reg64 { id: 4 }),
             },
             // store result
             Instruction::Store(
@@ -660,30 +668,32 @@ mod test {
                 src: RegOperand::Special(SpecialReg::TIdX),
             },
             // multiply thread index by 8 (size of u64)
+            Instruction::MoveConst(Type::U64, RegOperand::B64(Reg64 { id: 7 }), Constant::U64(8)),
             Instruction::Mul {
                 ty: Type::U64,
+                mode: MulMode::Low,
                 dst: RegOperand::B64(Reg64 { id: 6 }),
-                a: Operand::Reg(RegOperand::B64(Reg64 { id: 6 })),
-                b: Operand::Const(8),
+                a: RegOperand::B64(Reg64 { id: 6 }),
+                b: RegOperand::B64(Reg64 { id: 7 }),
             },
             // offset argument pointers by thread index
             Instruction::Add {
                 ty: Type::U64,
                 dst: RegOperand::B64(Reg64 { id: 0 }),
-                a: Operand::Reg(RegOperand::B64(Reg64 { id: 0 })),
-                b: Operand::Reg(RegOperand::B64(Reg64 { id: 6 })),
+                a: RegOperand::B64(Reg64 { id: 0 }),
+                b: RegOperand::B64(Reg64 { id: 6 }),
             },
             Instruction::Add {
                 ty: Type::U64,
                 dst: RegOperand::B64(Reg64 { id: 1 }),
-                a: Operand::Reg(RegOperand::B64(Reg64 { id: 1 })),
-                b: Operand::Reg(RegOperand::B64(Reg64 { id: 6 })),
+                a: RegOperand::B64(Reg64 { id: 1 }),
+                b: RegOperand::B64(Reg64 { id: 6 }),
             },
             Instruction::Add {
                 ty: Type::U64,
                 dst: RegOperand::B64(Reg64 { id: 2 }),
-                a: Operand::Reg(RegOperand::B64(Reg64 { id: 2 })),
-                b: Operand::Reg(RegOperand::B64(Reg64 { id: 6 })),
+                a: RegOperand::B64(Reg64 { id: 2 }),
+                b: RegOperand::B64(Reg64 { id: 6 }),
             },
             // load values from memory (pointed to by offset arguments)
             Instruction::Load(
@@ -700,8 +710,8 @@ mod test {
             Instruction::Add {
                 ty: Type::U64,
                 dst: RegOperand::B64(Reg64 { id: 5 }),
-                a: Operand::Reg(RegOperand::B64(Reg64 { id: 3 })),
-                b: Operand::Reg(RegOperand::B64(Reg64 { id: 4 })),
+                a: RegOperand::B64(Reg64 { id: 3 }),
+                b: RegOperand::B64(Reg64 { id: 4 }),
             },
             // store result
             Instruction::Store(
@@ -716,7 +726,7 @@ mod test {
             frame_size: 0,
             arg_size: 24,
             regs: RegDesc {
-                b64_count: 7,
+                b64_count: 8,
                 ..Default::default()
             },
         }];
