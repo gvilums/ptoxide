@@ -751,7 +751,7 @@ mod test {
             ),
             // load thread index
             Instruction::Move {
-                ty: Type::U64,
+                ty: Type::U32,
                 dst: RegOperand::B32(Reg32 { id: 0 }),
                 src: RegOperand::Special(SpecialReg::TIdX),
             },
