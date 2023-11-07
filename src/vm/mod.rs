@@ -348,8 +348,28 @@ impl Context {
         data.copy_from_slice(&self.global_mem[begin..end]);
     }
 
+    fn run_cta(
+        &mut self,
+        nctaid: (u32, u32, u32),
+        ctaid: (u32, u32, u32),
+        ntid: (u32, u32, u32),
+        desc: FuncFrameDesc,
+        init_stack: &[u8],
+    ) -> Result<(), VmError> {
+        for x in 0..ntid.0 {
+            for y in 0..ntid.1 {
+                for z in 0..ntid.2 {
+                    self.run_thread(nctaid, ctaid, ntid, (x, y, z), desc, init_stack)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn run_thread(
         &mut self,
+        nctaid: (u32, u32, u32),
+        ctaid: (u32, u32, u32),
         ntid: (u32, u32, u32),
         tid: (u32, u32, u32),
         desc: FuncFrameDesc,
@@ -526,7 +546,13 @@ impl Context {
         for x in 0..params.block_dim.0 {
             for y in 0..params.block_dim.1 {
                 for z in 0..params.block_dim.2 {
-                    self.run_thread(params.block_dim, (x, y, z), desc, &init_stack)?;
+                    self.run_cta(
+                        params.grid_dim,
+                        (x, y, z),
+                        params.block_dim,
+                        desc,
+                        &init_stack,
+                    )?;
                 }
             }
         }

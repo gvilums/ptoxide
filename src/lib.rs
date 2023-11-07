@@ -18,8 +18,19 @@ fn lex_version_number(lex: &mut Lexer<Token>) -> Option<Version> {
     Some(Version { major, minor })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+struct LexError;
+
+impl std::fmt::Display for LexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", LexError)
+    }
+}
+impl std::error::Error for LexError {}
+
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(skip r"[ \t\n\f]+")] // Ignore this regex pattern between tokens
+#[logos(error = LexError)]
 enum Token {
     #[token(".version")]
     Version,
@@ -203,14 +214,16 @@ enum Token {
 }
 
 #[derive(Error, Debug)]
-enum ParseErr<'a> {
+enum ParseErr {
     #[error("Unexpected token: {:?}", .0)]
-    UnexpectedToken(&'a Token),
+    UnexpectedToken(Token),
     #[error("Unexpected end of file")]
     UnexpectedEof,
+    #[error("Lex error")]
+    LexError(#[from] LexError),
 }
 
-type ParseResult<'a, T> = Result<(T, Scanner<'a>), ParseErr<'a>>;
+type ParseResult<'a, T> = Result<(T, Scanner<'a>), ParseErr>;
 
 #[derive(Clone, Copy, Debug)]
 struct Scanner<'a> {
@@ -226,7 +239,7 @@ impl<'a> Scanner<'a> {
         self.tokens.first()
     }
 
-    fn must_get(&self) -> Result<&'a Token, ParseErr<'a>> {
+    fn must_get(&self) -> Result<&'a Token, ParseErr> {
         self.get().ok_or(ParseErr::UnexpectedEof)
     }
 
@@ -236,13 +249,13 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn consume(&mut self, token: Token) -> Result<(), ParseErr<'a>> {
+    fn consume(&mut self, token: Token) -> Result<(), ParseErr> {
         let head = self.get().ok_or(ParseErr::UnexpectedEof)?;
         if head == &token {
             self.skip();
             Ok(())
         } else {
-            Err(ParseErr::UnexpectedToken(head))
+            Err(ParseErr::UnexpectedToken(head.clone()))
         }
     }
 
@@ -252,7 +265,7 @@ impl<'a> Scanner<'a> {
         head
     }
 
-    fn must_pop(&mut self) -> Result<&'a Token, ParseErr<'a>> {
+    fn must_pop(&mut self) -> Result<&'a Token, ParseErr> {
         self.pop().ok_or(ParseErr::UnexpectedEof)
     }
 }
@@ -422,7 +435,9 @@ enum InstructionSpecifier {
     Return,
 }
 
-fn parse_program(scanner: Scanner) -> Result<Module, ParseErr> {
+fn parse_program(src: &str) -> Result<Module, ParseErr> {
+    let tokens = Token::lexer(src).collect::<Result<Vec<_>, _>>()?;
+    let scanner = Scanner::new(&tokens);
     let (module, scanner) = parse_module(scanner)?;
     match scanner.get() {
         Some(_) => match parse_function(scanner) {
@@ -442,7 +457,7 @@ fn parse_version(mut scanner: Scanner) -> ParseResult<Version> {
     scanner.consume(Token::Version)?;
     match scanner.must_pop()? {
         Token::VersionNumber(version) => Ok((*version, scanner)),
-        t => Err(ParseErr::UnexpectedToken(t)),
+        t => Err(ParseErr::UnexpectedToken(t.clone())),
     }
 }
 
@@ -450,7 +465,7 @@ fn parse_target(mut scanner: Scanner) -> ParseResult<String> {
     scanner.consume(Token::Target)?;
     let target = scanner.pop().ok_or(ParseErr::UnexpectedEof)?;
     let Token::Identifier(target) = target else {
-        return Err(ParseErr::UnexpectedToken(target));
+        return Err(ParseErr::UnexpectedToken(target.clone()));
     };
     Ok((target.clone(), scanner))
 }
@@ -459,7 +474,7 @@ fn parse_address_size(mut scanner: Scanner) -> ParseResult<AddressSize> {
     scanner.consume(Token::AddressSize)?;
     let size = scanner.pop().ok_or(ParseErr::UnexpectedEof)?;
     let Token::Integer(size) = size else {
-        return Err(ParseErr::UnexpectedToken(size));
+        return Err(ParseErr::UnexpectedToken(size.clone()));
     };
     match size {
         32 => Ok((AddressSize::Adr32, scanner)),
@@ -505,7 +520,7 @@ fn parse_array_bounds(mut scanner: Scanner) -> ParseResult<Vec<u32>> {
             _ => break Ok((bounds, scanner)),
         }
         let Token::Integer(bound) = scanner.must_pop()? else {
-            return Err(ParseErr::UnexpectedToken(scanner.must_get()?));
+            return Err(ParseErr::UnexpectedToken(scanner.must_get()?.clone()));
         };
         scanner.consume(Token::RightBracket)?;
         // todo clean up raw casts
@@ -521,7 +536,7 @@ fn parse_state_space(mut scanner: Scanner) -> ParseResult<StateSpace> {
         Token::Reg => Ok((StateSpace::Register, scanner)),
         Token::Param => Ok((StateSpace::Parameter, scanner)),
         Token::Const => Ok((StateSpace::Constant, scanner)),
-        t => Err(ParseErr::UnexpectedToken(t)),
+        t => Err(ParseErr::UnexpectedToken(t.clone())),
     }
 }
 
@@ -529,7 +544,7 @@ fn parse_alignment(mut scanner: Scanner) -> ParseResult<u32> {
     scanner.consume(Token::Align)?;
     let alignment = match scanner.must_pop()? {
         Token::Integer(i) => *i as u32,
-        t => return Err(ParseErr::UnexpectedToken(t)),
+        t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
     Ok((alignment, scanner))
 }
@@ -554,7 +569,7 @@ fn parse_type(mut scanner: Scanner) -> ParseResult<Type> {
         Token::Float32 => Type::Float32,
         Token::Float64 => Type::Float64,
         Token::Predicate => Type::Predicate,
-        t => return Err(ParseErr::UnexpectedToken(t)),
+        t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
     Ok((ty, scanner))
 }
@@ -573,7 +588,7 @@ fn parse_special_reg(mut scanner: Scanner) -> ParseResult<SpecialReg> {
         Token::CtaIdX => SpecialReg::CtaIdX,
         Token::CtaIdY => SpecialReg::CtaIdY,
         Token::CtaIdZ => SpecialReg::CtaIdZ,
-        t => return Err(ParseErr::UnexpectedToken(t)),
+        t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
     Ok((reg, scanner))
 }
@@ -583,7 +598,7 @@ fn parse_mode(mut scanner: Scanner) -> ParseResult<Mode> {
         Token::Low => Mode::Low,
         Token::High => Mode::High,
         Token::Wide => Mode::Wide,
-        t => return Err(ParseErr::UnexpectedToken(t)),
+        t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
     Ok((mode, scanner))
 }
@@ -612,7 +627,7 @@ fn parse_variable(scanner: Scanner) -> ParseResult<Variable> {
 
     let ident = match scanner.must_pop()? {
         Token::Identifier(s) => s.clone(),
-        t => return Err(ParseErr::UnexpectedToken(t)),
+        t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
 
     let multiplicity = match scanner.get() {
@@ -648,11 +663,11 @@ fn parse_guard(mut scanner: Scanner) -> ParseResult<Guard> {
         Token::Exclamation => {
             let ident = match scanner.must_pop()? {
                 Token::Identifier(s) => s.clone(),
-                t => return Err(ParseErr::UnexpectedToken(t)),
+                t => return Err(ParseErr::UnexpectedToken(t.clone())),
             };
             Guard::Negated(ident)
         }
-        t => return Err(ParseErr::UnexpectedToken(t)),
+        t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
     Ok((guard, scanner))
 }
@@ -660,7 +675,7 @@ fn parse_guard(mut scanner: Scanner) -> ParseResult<Guard> {
 fn parse_predicate(mut scanner: Scanner) -> ParseResult<Predicate> {
     let pred = match scanner.must_pop()? {
         Token::Ge => Predicate::GreaterThan,
-        t => return Err(ParseErr::UnexpectedToken(t)),
+        t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
     Ok((pred, scanner))
 }
@@ -739,7 +754,7 @@ fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifi
             Ok((InstructionSpecifier::BarrierSync, scanner))
         }
         t => {
-            Err(ParseErr::UnexpectedToken(t))
+            Err(ParseErr::UnexpectedToken(t.clone()))
         },
     }
 }
@@ -768,12 +783,12 @@ fn parse_operands(mut scanner: Scanner) -> ParseResult<Vec<Operand>> {
             Token::LeftBracket => {
                 let ident = match scanner.must_pop()? {
                     Token::Identifier(s) => s.clone(),
-                    t => return Err(ParseErr::UnexpectedToken(t)),
+                    t => return Err(ParseErr::UnexpectedToken(t.clone())),
                 };
                 scanner.consume(Token::RightBracket)?;
                 Operand::Address(ident)
             }
-            t => return Err(ParseErr::UnexpectedToken(t)),
+            t => return Err(ParseErr::UnexpectedToken(t.clone())),
         };
         operands.push(operand);
     }
@@ -880,7 +895,7 @@ fn parse_function_param(mut scanner: Scanner) -> ParseResult<FunctionParam> {
             Ok((fparam, scanner))
         }
         Some(Token::RightParen) => Ok((fparam, scanner)),
-        Some(token) => Err(ParseErr::UnexpectedToken(token)),
+        Some(token) => Err(ParseErr::UnexpectedToken(token.clone())),
         None => Err(ParseErr::UnexpectedEof),
     }
 }
@@ -912,7 +927,7 @@ fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
             Some(Token::Visible) => visible = true,
             Some(Token::Entry) => entry = true,
             Some(Token::Identifier(s)) => break s.clone(),
-            Some(token) => return Err(ParseErr::UnexpectedToken(token)),
+            Some(token) => return Err(ParseErr::UnexpectedToken(token.clone())),
             None => return Err(ParseErr::UnexpectedEof),
         }
     };
@@ -931,19 +946,6 @@ fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
     ))
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let contents = fs::read_to_string("kernels/transpose.ptx")?;
-    let Ok(tokens) = Token::lexer(&contents).collect::<Result<Vec<_>, _>>() else {
-        panic!("Failed to lex file");
-    };
-    let module = match parse_program(Scanner::new(&tokens)) {
-        Ok(m) => m,
-        Err(e) => panic!("Failed to parse file: {}", e),
-    };
-    dbg!(module);
-    Ok(())
-}
-
 // generic address is 64 bits, of which the upper 3 bits denote the space
 // the lower 61 bits denote the address in that space
 
@@ -956,3 +958,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 //
 // the exception to this is the register space. registers of each type are allocated
 // 
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_parse_add() {
+        let contents = fs::read_to_string("kernels/add.ptx").unwrap();
+        let _ = parse_program(&contents).unwrap();
+    }
+
+    #[test]
+    fn test_parse_transpose() {
+        let contents = fs::read_to_string("kernels/transpose.ptx").unwrap();
+        let _ = parse_program(&contents).unwrap();
+    }
+
+    #[test]
+    fn test_parse_add_simple() {
+        let contents = fs::read_to_string("kernels/add_simple.ptx").unwrap();
+        let _ = parse_program(&contents).unwrap();
+    }
+}
