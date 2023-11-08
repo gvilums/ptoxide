@@ -236,6 +236,7 @@ impl Token {
                 | Token::AddressSize
                 | Token::Visible
                 | Token::Entry
+                | Token::Function
                 | Token::Param
                 | Token::Reg
                 | Token::Global
@@ -490,16 +491,22 @@ enum InstructionSpecifier {
     ConvertAddressTo(Type, StateSpace),
     SetPredicate(Predicate, Type),
     ShiftLeft(Type),
+    Call {
+        uniform: bool,
+        ident: Ident,
+        ret_param: Option<Ident>,
+        params: Vec<Ident>,
+    },
     BarrierSync,
     Branch,
     Return,
 }
 
 fn parse_program(src: &str) -> Result<Module, ParseErr> {
-    let res = Token::lexer(src)
-        .spanned()
-        .map(|(t, span)| t.map_err(|e| (e, span)))
-        .collect::<Result<Vec<_>, _>>();
+    // let res = Token::lexer(src)
+    //     .spanned()
+    //     .map(|(t, span)| t.map_err(|e| (e, span)))
+    //     .collect::<Result<Vec<_>, _>>();
     let tokens = Token::lexer(src).collect::<Result<Vec<_>, _>>()?;
     let scanner = Scanner::new(&tokens);
     parse_module(scanner).map(|(module, _)| module)
@@ -753,6 +760,49 @@ fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifi
             let (to, scanner) = parse_type(scanner)?;
             let (from, scanner) = parse_type(scanner)?;
             Ok((InstructionSpecifier::Convert { to, from }, scanner))
+        }
+        Token::Call => {
+            let uniform = scanner.consume_match(Token::Uniform);
+            let ret_param = if let Token::LeftParen = scanner.must_get()? {
+                scanner.skip();
+                let ident = match scanner.must_pop()? {
+                    Token::Identifier(s) => s.clone(),
+                    t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                };
+                scanner.consume(Token::RightParen)?;
+                scanner.consume(Token::Comma)?;
+                Some(ident)
+            } else {
+                None
+            };
+            let ident = match scanner.must_pop()? {
+                Token::Identifier(s) => s.clone(),
+                t => return Err(ParseErr::UnexpectedToken(t.clone())),
+            };
+            scanner.consume(Token::Comma)?;
+            let mut params = Vec::new();
+            if let Token::LeftParen = scanner.must_get()? {
+                scanner.skip();
+                loop {
+                    let ident = match scanner.must_pop()? {
+                        Token::Identifier(s) => s.clone(),
+                        t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                    };
+                    params.push(ident);
+                    match scanner.must_pop()? {
+                        Token::RightParen => break,
+                        Token::Comma => {},
+                        t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                    }
+                }
+            };           
+
+            Ok((InstructionSpecifier::Call {
+                uniform,
+                ident,
+                ret_param,
+                params,
+            }, scanner))
         }
         Token::ConvertAddress => match scanner.get() {
             Some(Token::To) => {
