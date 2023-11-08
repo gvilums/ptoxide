@@ -388,10 +388,13 @@ impl Context {
         Ok(())
     }
 
-    pub fn alloc(&mut self, size: usize) -> DevicePointer {
-        let ptr = self.global_mem.len();
-        self.global_mem.resize(ptr + size, 0);
-        DevicePointer(ptr as u64)
+    pub fn alloc(&mut self, size: usize, align: usize) -> DevicePointer {
+        // Calculate the next aligned position
+        let aligned_ptr = (self.global_mem.len() + align - 1) & !(align - 1);
+        // Resize the vector to ensure the space is allocated
+        self.global_mem.resize(aligned_ptr + size, 0);
+        // Return the device pointer to the aligned address
+        DevicePointer(aligned_ptr as u64)
     }
 
     pub fn write(&mut self, ptr: DevicePointer, offset: usize, data: &[u8]) {
@@ -599,7 +602,7 @@ impl Context {
                         _ => todo!(),
                     }
                 }
-                Instruction::SetPredicate (ty,  op, dst, a, b ) => {
+                Instruction::SetPredicate(ty, op, dst, a, b) => {
                     let RegOperand::Pred(dst) = dst else {
                         return Err(VmError::InvalidOperand(inst, dst));
                     };
@@ -615,7 +618,7 @@ impl Context {
                             };
                             state.set_pred(dst, value);
                         }
-                        _ => todo!()
+                        _ => todo!(),
                     }
                 }
                 Instruction::Jump { offset } => {
@@ -735,10 +738,11 @@ mod test {
                 ..Default::default()
             },
         }];
+        const ALIGN: usize = std::mem::align_of::<u64>();
         let mut ctx = Context::new_raw(prog, desc);
-        let a = ctx.alloc(8);
-        let b = ctx.alloc(8);
-        let c = ctx.alloc(8);
+        let a = ctx.alloc(8, ALIGN);
+        let b = ctx.alloc(8, ALIGN);
+        let c = ctx.alloc(8, ALIGN);
         ctx.write(a, 0, &1u64.to_ne_bytes());
         ctx.write(b, 0, &2u64.to_ne_bytes());
         ctx.run(
@@ -850,24 +854,29 @@ mod test {
                 ..Default::default()
             },
         }];
+
+        const ALIGN: usize = std::mem::align_of::<u64>();
         const N: usize = 10;
+
         let mut ctx = Context::new_raw(prog, desc);
-        let a = ctx.alloc(8 * N);
-        let b = ctx.alloc(8 * N);
-        let c = ctx.alloc(8 * N);
-        for i in 0..N {
-            ctx.write(a, 8 * i, &1u64.to_ne_bytes());
-            ctx.write(b, 8 * i, &2u64.to_ne_bytes());
-        }
+        let a = ctx.alloc(8 * N, ALIGN);
+        let b = ctx.alloc(8 * N, ALIGN);
+        let c = ctx.alloc(8 * N, ALIGN);
+
+        let data_a = std::iter::repeat(1u64).take(N).collect::<Vec<_>>();
+        let data_b = std::iter::repeat(2u64).take(N).collect::<Vec<_>>();
+        ctx.write(a, 0, bytemuck::cast_slice(&data_a));
+        ctx.write(b, 0, bytemuck::cast_slice(&data_b));
+
         ctx.run(
             LaunchParams::new().func(0).grid1d(1).block1d(N as u32),
             &[Argument::Ptr(a), Argument::Ptr(b), Argument::Ptr(c)],
         )
         .unwrap();
-        for i in 0..N {
-            let mut res = [0u8; 8];
-            ctx.read(c, 8 * i, &mut res);
-            assert_eq!(u64::from_ne_bytes(res), 3);
-        }
+
+        let mut res = vec![0u64; N];
+        ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
+
+        res.iter().for_each(|v| assert_eq!(*v, 3));
     }
 }
