@@ -20,7 +20,7 @@ fn lex_version_number(lex: &mut Lexer<Token>) -> Option<Version> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
-struct LexError;
+pub struct LexError;
 
 impl std::fmt::Display for LexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,7 +32,7 @@ impl std::error::Error for LexError {}
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(skip r"[ \t\n\f]+")] // Ignore this regex pattern between tokens
 #[logos(error = LexError)]
-enum Token {
+pub enum Token {
     #[token(".version")]
     Version,
     #[token(".target")]
@@ -215,7 +215,7 @@ enum Token {
 }
 
 #[derive(Error, Debug)]
-enum ParseErr {
+pub enum ParseErr {
     #[error("Unexpected token: {:?}", .0)]
     UnexpectedToken(Token),
     #[error("Unexpected end of file")]
@@ -274,7 +274,7 @@ impl<'a> Scanner<'a> {
 type Ident = String;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Version {
+pub struct Version {
     major: i32,
     minor: i32,
 }
@@ -851,7 +851,7 @@ fn parse_basic_block(mut scanner: Scanner) -> ParseResult<BasicBlock> {
     ))
 }
 
-fn parse_function_body(mut scanner: Scanner) -> ParseResult<Vec<BasicBlock>> {
+fn parse_braced_block(mut scanner: Scanner) -> ParseResult<Vec<BasicBlock>> {
     scanner.consume(Token::LeftBrace)?; // Consume the left brace
     let mut basic_blocks = Vec::new();
     loop {
@@ -933,7 +933,7 @@ fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
         }
     };
     let (params, scanner) = parse_function_params(scanner)?;
-    let (basic_blocks, scanner) = parse_function_body(scanner)?;
+    let (basic_blocks, scanner) = parse_braced_block(scanner)?;
 
     Ok((
         Function {

@@ -113,7 +113,7 @@ pub enum Instruction {
         dst: RegOperand,
         src: RegOperand,
     },
-    MoveConst(Type, RegOperand, Constant),
+    Const(Type, RegOperand, Constant),
     Add {
         ty: Type,
         dst: RegOperand,
@@ -148,6 +148,7 @@ struct ThreadState {
     regs: Vec<Registers>,
     stack_data: Vec<u8>,
     frame_meta: Vec<FrameMeta>,
+    function_args: Vec<isize>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -205,6 +206,7 @@ impl ThreadState {
             regs: Vec::new(),
             stack_data: Vec::new(),
             frame_meta: Vec::new(),
+            function_args: Vec::new(),
         }
     }
 
@@ -364,12 +366,26 @@ impl Context {
         self.program[iptr.0]
     }
 
-    pub fn new(program: Vec<Instruction>, descriptors: Vec<FuncFrameDesc>) -> Context {
+    #[cfg(test)]
+    fn new_raw(program: Vec<Instruction>, descriptors: Vec<FuncFrameDesc>) -> Context {
         Context {
             global_mem: Vec::new(),
             program,
             descriptors,
         }
+    }
+
+    pub fn new() -> Context {
+        Context {
+            global_mem: Vec::new(),
+            program: Vec::new(),
+            descriptors: Vec::new(),
+        }
+    }
+
+    pub fn load(module: &str) -> Result<(), super::ParseErr> {
+        let module = super::parse_program(module)?;
+        Ok(())
     }
 
     pub fn alloc(&mut self, size: usize) -> DevicePointer {
@@ -492,6 +508,11 @@ impl Context {
                                 let b = u64::from_ne_bytes(state.get_b64(b));
                                 state.set_b64(dst, (a + b).to_ne_bytes());
                             }
+                            Type::S64 => {
+                                let a = i64::from_ne_bytes(state.get_b64(a));
+                                let b = i64::from_ne_bytes(state.get_b64(b));
+                                state.set_b64(dst, (a + b).to_ne_bytes());
+                            }
                             _ => todo!(),
                         },
                         _ => todo!(),
@@ -569,7 +590,7 @@ impl Context {
                         _ => todo!(),
                     }
                 }
-                Instruction::MoveConst(ty, dst, value) => {
+                Instruction::Const(ty, dst, value) => {
                     use RegOperand::*;
                     match (dst, value) {
                         (B64(dst), Constant::U64(value)) => {
@@ -714,7 +735,7 @@ mod test {
                 ..Default::default()
             },
         }];
-        let mut ctx = Context::new(prog, desc);
+        let mut ctx = Context::new_raw(prog, desc);
         let a = ctx.alloc(8);
         let b = ctx.alloc(8);
         let c = ctx.alloc(8);
@@ -762,7 +783,7 @@ mod test {
                 src: RegOperand::B32(Reg32 { id: 0 }),
             },
             // multiply thread index by 8 (size of u64)
-            Instruction::MoveConst(
+            Instruction::Const(
                 Type::U64,
                 RegOperand::B64(Reg64 { id: 7 }),
                 Constant::U64(8),
@@ -830,7 +851,7 @@ mod test {
             },
         }];
         const N: usize = 10;
-        let mut ctx = Context::new(prog, desc);
+        let mut ctx = Context::new_raw(prog, desc);
         let a = ctx.alloc(8 * N);
         let b = ctx.alloc(8 * N);
         let c = ctx.alloc(8 * N);
