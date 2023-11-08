@@ -863,8 +863,8 @@ mod test {
         let b = ctx.alloc(8 * N, ALIGN);
         let c = ctx.alloc(8 * N, ALIGN);
 
-        let data_a = std::iter::repeat(1u64).take(N).collect::<Vec<_>>();
-        let data_b = std::iter::repeat(2u64).take(N).collect::<Vec<_>>();
+        let data_a = vec![1u64; N];
+        let data_b = vec![2u64; N];
         ctx.write(a, 0, bytemuck::cast_slice(&data_a));
         ctx.write(b, 0, bytemuck::cast_slice(&data_b));
 

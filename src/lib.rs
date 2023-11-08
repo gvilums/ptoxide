@@ -1,5 +1,5 @@
-pub mod vm;
 pub mod compiler;
+pub mod vm;
 
 use std::fs;
 
@@ -124,6 +124,8 @@ pub enum Token {
     Branch,
     #[token("setp")]
     SetPredicate,
+    #[token("call")]
+    Call,
 
     #[token("bar")]
     #[token("barrier")]
@@ -147,6 +149,9 @@ pub enum Token {
 
     #[token(".ge")]
     Ge,
+
+    #[token(".uni")]
+    Uniform,
 
     #[token("%tid")]
     ThreadId,
@@ -212,6 +217,26 @@ pub enum Token {
 
     #[regex(r"//.*", logos::skip)]
     Skip,
+}
+
+impl Token {
+    fn is_directive(&self) -> bool {
+        matches!(
+            self,
+            Token::Version
+                | Token::Target
+                | Token::AddressSize
+                | Token::Visible
+                | Token::Entry
+                | Token::Param
+                | Token::Reg
+                | Token::Global
+                | Token::Local
+                | Token::Shared
+                | Token::Const
+                | Token::Align,
+        )
+    }
 }
 
 #[derive(Error, Debug)]
@@ -301,7 +326,7 @@ struct Function {
     visible: bool,
     entry: bool,
     params: Vec<FunctionParam>,
-    basic_blocks: Vec<BasicBlock>,
+    body: Statement,
 }
 
 #[derive(Debug)]
@@ -378,13 +403,6 @@ struct Variable {
 }
 
 #[derive(Debug)]
-struct BasicBlock {
-    label: Option<Ident>,
-    variables: Vec<Variable>,
-    instructions: Vec<Instruction>,
-}
-
-#[derive(Debug)]
 enum Operand {
     SpecialReg(SpecialReg),
     Identifier(Ident),
@@ -399,10 +417,23 @@ enum Guard {
 }
 
 #[derive(Debug)]
+enum Directive {
+    VarDecl(Variable),
+}
+
+#[derive(Debug)]
 struct Instruction {
+    label: Option<Ident>,
     guard: Option<Guard>,
     specifier: InstructionSpecifier,
     operands: Vec<Operand>,
+}
+
+#[derive(Debug)]
+enum Statement {
+    Directive(Directive),
+    Instruction(Instruction),
+    Grouping(Vec<Statement>),
 }
 
 #[derive(Debug)]
@@ -607,10 +638,12 @@ fn parse_mode(mut scanner: Scanner) -> ParseResult<Mode> {
 fn parse_variable(scanner: Scanner) -> ParseResult<Variable> {
     let (state_space, mut scanner) = parse_state_space(scanner)?;
 
-    let alignment = parse_alignment(scanner).map(|(alignment, res)| {
-        scanner = res;
-        alignment
-    }).ok();
+    let alignment = parse_alignment(scanner)
+        .map(|(alignment, res)| {
+            scanner = res;
+            alignment
+        })
+        .ok();
 
     let vector = match scanner.get() {
         Some(Token::V2) => {
@@ -754,9 +787,7 @@ fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifi
             scanner.consume(Token::Sync)?;
             Ok((InstructionSpecifier::BarrierSync, scanner))
         }
-        t => {
-            Err(ParseErr::UnexpectedToken(t.clone()))
-        },
+        t => Err(ParseErr::UnexpectedToken(t.clone())),
     }
 }
 
@@ -795,7 +826,38 @@ fn parse_operands(mut scanner: Scanner) -> ParseResult<Vec<Operand>> {
     }
 }
 
+fn parse_grouping(mut scanner: Scanner) -> ParseResult<Vec<Statement>> {
+    scanner.consume(Token::LeftBrace)?; // Consume the left brace
+    let mut statements = Vec::new();
+    loop {
+        if let Some(Token::RightBrace) = scanner.get() {
+            scanner.skip();
+            break Ok((statements, scanner));
+        }
+        match parse_statement(scanner) {
+            Ok((basic_block, rest)) => {
+                statements.push(basic_block);
+                scanner = rest;
+            }
+            Err(e) => break Err(e),
+        }
+    }
+}
+
+fn parse_directive(scanner: Scanner) -> ParseResult<Directive> {
+    let (var, scanner) = parse_variable(scanner)?;
+    Ok((Directive::VarDecl(var), scanner))
+}
+
 fn parse_instruction(mut scanner: Scanner) -> ParseResult<Instruction> {
+    let label = if let Some(Token::Identifier(s)) = scanner.get() {
+        let s = s.clone();
+        scanner.skip();
+        scanner.consume(Token::Colon)?;
+        Some(s)
+    } else {
+        None
+    };
     let guard = if let Ok((guard, res)) = parse_guard(scanner) {
         scanner = res;
         Some(guard)
@@ -808,6 +870,7 @@ fn parse_instruction(mut scanner: Scanner) -> ParseResult<Instruction> {
 
     Ok((
         Instruction {
+            label,
             guard,
             specifier,
             operands,
@@ -816,55 +879,19 @@ fn parse_instruction(mut scanner: Scanner) -> ParseResult<Instruction> {
     ))
 }
 
-fn parse_basic_block(mut scanner: Scanner) -> ParseResult<BasicBlock> {
-    let label = match scanner.get() {
-        Some(Token::Identifier(s)) => {
-            scanner.skip();
-            scanner.consume(Token::Colon)?;
-            Some(s.clone())
+fn parse_statement(scanner: Scanner) -> ParseResult<Statement> {
+    match scanner.must_get()? {
+        Token::LeftBrace => {
+            let (grouping, scanner) = parse_grouping(scanner)?;
+            Ok((Statement::Grouping(grouping), scanner))
         }
-        _ => None,
-    };
-    let mut variables = Vec::new();
-    let mut instructions = Vec::new();
-    while let Some(t) = scanner.get() {
-        // if our next token is a right brace or an identifier, this basic block is done
-        if matches!(t, Token::RightBrace | Token::Identifier(_)) {
-            break;
+        t if t.is_directive() => {
+            let (dir, scanner) = parse_directive(scanner)?;
+            Ok((Statement::Directive(dir), scanner))
         }
-        if let Ok((var, rest)) = parse_variable(scanner) {
-            variables.push(var);
-            scanner = rest;
-        } else {
-            let (inst, rest) = parse_instruction(scanner)?;
-            instructions.push(inst);
-            scanner = rest;
-        }
-    }
-    Ok((
-        BasicBlock {
-            label,
-            variables,
-            instructions,
-        },
-        scanner,
-    ))
-}
-
-fn parse_braced_block(mut scanner: Scanner) -> ParseResult<Vec<BasicBlock>> {
-    scanner.consume(Token::LeftBrace)?; // Consume the left brace
-    let mut basic_blocks = Vec::new();
-    loop {
-        if let Some(Token::RightBrace) = scanner.get() {
-            scanner.skip();
-            break Ok((basic_blocks, scanner));
-        }
-        match parse_basic_block(scanner) {
-            Ok((basic_block, rest)) => {
-                basic_blocks.push(basic_block);
-                scanner = rest;
-            }
-            Err(e) => break Err(e),
+        _ => {
+            let (instr, scanner) = parse_instruction(scanner)?;
+            Ok((Statement::Instruction(instr), scanner))
         }
     }
 }
@@ -872,10 +899,12 @@ fn parse_braced_block(mut scanner: Scanner) -> ParseResult<Vec<BasicBlock>> {
 fn parse_function_param(mut scanner: Scanner) -> ParseResult<FunctionParam> {
     scanner.consume(Token::Param)?; // Consume the param keyword
 
-    let alignment = parse_alignment(scanner).map(|(alignment, res)| {
-        scanner = res;
-        alignment
-    }).ok();
+    let alignment = parse_alignment(scanner)
+        .map(|(alignment, res)| {
+            scanner = res;
+            alignment
+        })
+        .ok();
 
     let (ty, mut scanner) = parse_type(scanner)?;
     let ident = loop {
@@ -889,7 +918,12 @@ fn parse_function_param(mut scanner: Scanner) -> ParseResult<FunctionParam> {
 
     let (array_bounds, mut scanner) = parse_array_bounds(scanner)?;
 
-    let fparam = FunctionParam { alignment, ident, ty, array_bounds };
+    let fparam = FunctionParam {
+        alignment,
+        ident,
+        ty,
+        array_bounds,
+    };
     match scanner.get() {
         Some(Token::Comma) => {
             scanner.skip();
@@ -933,7 +967,7 @@ fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
         }
     };
     let (params, scanner) = parse_function_params(scanner)?;
-    let (basic_blocks, scanner) = parse_braced_block(scanner)?;
+    let (body, scanner) = parse_statement(scanner)?;
 
     Ok((
         Function {
@@ -941,7 +975,7 @@ fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
             visible,
             entry,
             params,
-            basic_blocks,
+            body,
         },
         scanner,
     ))
@@ -958,7 +992,7 @@ fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
 // allocated in a rust-native structure, such as a Vec
 //
 // the exception to this is the register space. registers of each type are allocated
-// 
+//
 
 #[cfg(test)]
 mod test {
@@ -979,6 +1013,12 @@ mod test {
     #[test]
     fn test_parse_add_simple() {
         let contents = fs::read_to_string("kernels/add_simple.ptx").unwrap();
+        let _ = parse_program(&contents).unwrap();
+    }
+
+    #[test]
+    fn test_parse_test() {
+        let contents = fs::read_to_string("kernels/test.ptx").unwrap();
         let _ = parse_program(&contents).unwrap();
     }
 }
