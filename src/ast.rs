@@ -468,7 +468,7 @@ pub struct VarDecl {
     pub multiplicity: Option<u32>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AddressOperand {
     Address(Ident),
     AddressOffset(Ident, i32),
@@ -487,7 +487,7 @@ impl AddressOperand {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Operand {
     SpecialReg(SpecialReg),
     Variable(Ident),

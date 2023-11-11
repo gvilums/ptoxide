@@ -181,11 +181,19 @@ impl<'a> FuncCodegenState<'a> {
         Ok(())
     }
 
-    fn construct_immediate(&mut self, ty: vm::Type, imm: i32) -> Result<vm::RegOperand, CompilationError> {
+    fn construct_immediate(
+        &mut self,
+        ty: vm::Type,
+        imm: i32,
+    ) -> Result<vm::RegOperand, CompilationError> {
         todo!()
     }
 
-    fn get_src_reg(&mut self, ty: vm::Type, op: &ast::Operand) -> Result<vm::RegOperand, CompilationError> {
+    fn get_src_reg(
+        &mut self,
+        ty: vm::Type,
+        op: &ast::Operand,
+    ) -> Result<vm::RegOperand, CompilationError> {
         use ast::Operand;
         match op {
             Operand::Variable(ident) => self.var_map.get_reg(ident),
@@ -195,11 +203,35 @@ impl<'a> FuncCodegenState<'a> {
         }
     }
 
+    fn get_dst_reg(
+        &mut self,
+        ty: vm::Type,
+        op: &ast::Operand,
+    ) -> Result<vm::RegOperand, CompilationError> {
+        use ast::Operand;
+        match op {
+            Operand::Variable(ident) => self.var_map.get_reg(ident),
+            _ => Err(CompilationError::InvalidOperand(op.clone())),
+        }
+    }
+
+    fn reg_dst_2src(
+        &mut self,
+        ty: vm::Type,
+        ops: &[ast::Operand],
+    ) -> Result<[vm::RegOperand; 3], CompilationError> {
+        let [dst, lhs_op, rhs_op] = ops else { todo!() };
+        let dst_reg = self.get_dst_reg(ty, dst)?;
+        let lhs_reg = self.get_src_reg(ty, lhs_op)?;
+        let rhs_reg = self.get_src_reg(ty, rhs_op)?;
+        Ok([dst_reg, lhs_reg, rhs_reg])
+    }
+
     fn handle_instruction(&mut self, instr: ast::Instruction) -> Result<(), CompilationError> {
-        use vm::AddrOperand;
         use ast::AddressOperand;
         use ast::InstructionSpecifier::*;
         use ast::Operand;
+        use vm::AddrOperand;
         match instr.specifier {
             Load(st, ty) => {
                 let [Operand::Variable(ident), Operand::Address(addr_op)] =
@@ -292,58 +324,41 @@ impl<'a> FuncCodegenState<'a> {
                 ))
             }
             Move(ty) => {
-                let [Operand::Variable(dst), src_op] = instr.operands.as_slice() else {
+                let [dst, src] = instr.operands.as_slice() else {
                     todo!()
                 };
                 let ty = ty.to_vm();
-                let src_reg = self.get_src_reg(ty, src_op)?;
-                let dst_reg = self.var_map.get_reg(dst)?;
+                let src_reg = self.get_src_reg(ty, src)?;
+                let dst_reg = self.get_dst_reg(ty, dst)?;
                 self.instructions
                     .push(vm::Instruction::Move(ty, dst_reg, src_reg));
             }
             Add(ty) => {
-                let [Operand::Variable(dst), lhs_op, rhs_op] =
-                    instr.operands.as_slice()
-                else {
-                    todo!()
-                };
                 let ty = ty.to_vm();
-                let dst_reg = self.var_map.get_reg(dst)?;
-                let lhs_reg = self.get_src_reg(ty, lhs_op)?;
-                let rhs_reg = self.get_src_reg(ty, rhs_op)?;
+                let [dst_reg, lhs_reg, rhs_reg] =
+                    self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::Add(ty, dst_reg, lhs_reg, rhs_reg));
             }
             Multiply(mode, ty) => {
-                let [Operand::Variable(dst), lhs_op, rhs_op] =
-                    instr.operands.as_slice()
-                else {
-                    todo!()
-                };
                 let ty = ty.to_vm();
-                let dst_reg = self.var_map.get_reg(dst)?;
-                let lhs_reg = self.get_src_reg(ty, lhs_op)?;
-                let rhs_reg = self.get_src_reg(ty, rhs_op)?;
-                self.instructions.push(vm::Instruction::Mul(
-                    ty,
-                    mode,
-                    dst_reg,
-                    lhs_reg,
-                    rhs_reg,
-                ));
+                let [dst_reg, lhs_reg, rhs_reg] =
+                    self.reg_dst_2src(ty, instr.operands.as_slice())?;
+                self.instructions
+                    .push(vm::Instruction::Mul(ty, mode, dst_reg, lhs_reg, rhs_reg));
             }
             MultiplyAdd(_, _) => todo!(),
             Convert { from, to } => todo!(),
             ConvertAddress(ty, st) => {
                 // for now, just move the address register into the destination register
-                let [Operand::Variable(dst), Operand::Variable(src)] = instr.operands.as_slice()
-                else {
+                let [dst, src] = instr.operands.as_slice() else {
                     todo!();
                 };
-                let dst_reg = self.var_map.get_reg(dst)?;
-                let src_reg = self.var_map.get_reg(src)?;
+                let ty = ty.to_vm();
+                let dst_reg = self.get_dst_reg(ty, dst)?;
+                let src_reg = self.get_src_reg(ty, src)?;
                 self.instructions
-                    .push(vm::Instruction::Move(ty.to_vm(), dst_reg, src_reg));
+                    .push(vm::Instruction::Move(ty, dst_reg, src_reg));
             }
             ConvertAddressTo(_, _) => todo!(),
             SetPredicate(_, _) => todo!(),
