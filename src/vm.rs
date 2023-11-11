@@ -1,7 +1,8 @@
-pub mod bc;
+use crate::ast::MulMode;
+use crate::ast::SpecialReg;
 
 #[derive(Clone, Copy, Debug)]
-pub enum MemStateSpace {
+pub enum StateSpace {
     // includes ptx global and const
     Global,
     // includes ptx local and param
@@ -58,20 +59,6 @@ pub enum PredicateOp {
     NotEqual,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum MulMode {
-    Low,
-    High,
-    Wide,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum SpecialReg {
-    NCtaIdX,
-    CtaIdX,
-    NTIdX,
-    TIdX,
-}
 
 #[derive(Clone, Copy, Debug)]
 pub enum RegOperand {
@@ -100,26 +87,26 @@ pub enum AddrOperand {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
-    Load(MemStateSpace, RegOperand, AddrOperand),
-    Store(MemStateSpace, RegOperand, AddrOperand),
+    Load(StateSpace, RegOperand, AddrOperand),
+    Store(StateSpace, RegOperand, AddrOperand),
     Convert {
         dst_type: Type,
         src_type: Type,
         dst: RegOperand,
         src: RegOperand,
     },
-    Move {
-        ty: Type,
-        dst: RegOperand,
-        src: RegOperand,
-    },
+    Move(
+        Type,
+        RegOperand,
+        RegOperand,
+    ),
     Const(Type, RegOperand, Constant),
-    Add {
-        ty: Type,
-        dst: RegOperand,
-        a: RegOperand,
-        b: RegOperand,
-    },
+    Add(
+        Type,
+        RegOperand,
+        RegOperand,
+        RegOperand,
+    ),
     Mul(Type, MulMode, RegOperand, RegOperand, RegOperand),
     ShiftLeft(Type, RegOperand, RegOperand, RegOperand),
     SetPredicate(Type, PredicateOp, RegOperand, RegOperand, RegOperand),
@@ -134,7 +121,7 @@ pub enum Instruction {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct IPtr(usize);
+pub struct IPtr(pub usize);
 
 #[derive(Clone, Debug)]
 struct FrameMeta {
@@ -161,12 +148,45 @@ pub struct RegDesc {
     b128_count: usize,
 }
 
+impl RegDesc {
+    pub fn alloc_pred(&mut self) -> RegPred {
+        let id = self.pred_count;
+        self.pred_count += 1;
+        RegPred { id }
+    }
+    pub fn alloc_b8(&mut self) -> Reg8 {
+        let id = self.b8_count;
+        self.b8_count += 1;
+        Reg8 { id }
+    }
+    pub fn alloc_b16(&mut self) -> Reg16 {
+        let id = self.b16_count;
+        self.b16_count += 1;
+        Reg16 { id }
+    }
+    pub fn alloc_b32(&mut self) -> Reg32 {
+        let id = self.b32_count;
+        self.b32_count += 1;
+        Reg32 { id }
+    }
+    pub fn alloc_b64(&mut self) -> Reg64 {
+        let id = self.b64_count;
+        self.b64_count += 1;
+        Reg64 { id }
+    }
+    pub fn alloc_b128(&mut self) -> Reg128 {
+        let id = self.b128_count;
+        self.b128_count += 1;
+        Reg128 { id }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct FuncFrameDesc {
-    iptr: IPtr,
-    frame_size: usize,
-    arg_size: usize,
-    regs: RegDesc,
+    pub iptr: IPtr,
+    pub frame_size: usize,
+    pub arg_size: usize,
+    pub regs: RegDesc,
 }
 
 #[derive(Debug)]
@@ -383,9 +403,10 @@ impl Context {
         }
     }
 
-    pub fn load(module: &str) -> Result<(), super::ParseErr> {
-        let module = super::parse_program(module)?;
-        Ok(())
+    pub fn load(module: &str) -> Result<(), crate::ast::ParseErr> {
+        let module = crate::ast::parse_program(module)?;
+        let _compiled = crate::compiler::compile(module).unwrap();
+        todo!()
     }
 
     pub fn alloc(&mut self, size: usize, align: usize) -> DevicePointer {
@@ -411,13 +432,13 @@ impl Context {
 
     fn get_data_ptr<'a>(
         &'a mut self,
-        space: MemStateSpace,
+        space: StateSpace,
         state: &'a mut ThreadState,
     ) -> &'a mut [u8] {
         match space {
-            MemStateSpace::Global => self.global_mem.as_mut_slice(),
-            MemStateSpace::Stack => state.stack_data.as_mut_slice(),
-            MemStateSpace::Shared => todo!(),
+            StateSpace::Global => self.global_mem.as_mut_slice(),
+            StateSpace::Stack => state.stack_data.as_mut_slice(),
+            StateSpace::Shared => todo!(),
         }
     }
 
@@ -458,9 +479,9 @@ impl Context {
                 Instruction::Load(space, dst, addr) => {
                     let addr = state.resolve_address(addr);
                     let data = match space {
-                        MemStateSpace::Global => self.global_mem.as_slice(),
-                        MemStateSpace::Stack => state.stack_data.as_slice(),
-                        MemStateSpace::Shared => todo!(),
+                        StateSpace::Global => self.global_mem.as_slice(),
+                        StateSpace::Stack => state.stack_data.as_slice(),
+                        StateSpace::Shared => todo!(),
                     };
                     match dst {
                         RegOperand::B8(r) => state.set_b8(r, data[addr..addr + 1].try_into()?),
@@ -502,7 +523,7 @@ impl Context {
                         o => return Err(VmError::InvalidOperand(inst, o)),
                     }
                 }
-                Instruction::Add { ty, dst, a, b } => {
+                Instruction::Add(ty, dst, a, b ) => {
                     use RegOperand::*;
                     match (dst, a, b) {
                         (B64(dst), B64(a), B64(b)) => match ty {
@@ -572,22 +593,22 @@ impl Context {
                         _ => todo!(),
                     }
                 }
-                Instruction::Move { ty: _, dst, src } => {
+                Instruction::Move(_, dst, src) => {
                     use RegOperand::*;
                     match (dst, src) {
                         (B64(dst), B64(src)) => {
                             state.set_b64(dst, state.get_b64(src));
                         }
-                        (B32(dst), Special(SpecialReg::TIdX)) => {
+                        (B32(dst), Special(SpecialReg::ThreadIdX)) => {
                             state.set_b32(dst, tid.0.to_ne_bytes());
                         }
-                        (B32(dst), Special(SpecialReg::NTIdX)) => {
+                        (B32(dst), Special(SpecialReg::NumThreadX)) => {
                             state.set_b32(dst, ntid.0.to_ne_bytes());
                         }
                         (B32(dst), Special(SpecialReg::CtaIdX)) => {
                             state.set_b32(dst, ctaid.0.to_ne_bytes());
                         }
-                        (B32(dst), Special(SpecialReg::NCtaIdX)) => {
+                        (B32(dst), Special(SpecialReg::NumCtaX)) => {
                             state.set_b32(dst, nctaid.0.to_ne_bytes());
                         }
                         _ => todo!(),
@@ -689,41 +710,41 @@ mod test {
         let prog = vec![
             // load arguments into registers
             Instruction::Load(
-                MemStateSpace::Stack,
+                StateSpace::Stack,
                 RegOperand::B64(Reg64 { id: 0 }),
                 AddrOperand::StackRelative(-24),
             ),
             Instruction::Load(
-                MemStateSpace::Stack,
+                StateSpace::Stack,
                 RegOperand::B64(Reg64 { id: 1 }),
                 AddrOperand::StackRelative(-16),
             ),
             Instruction::Load(
-                MemStateSpace::Stack,
+                StateSpace::Stack,
                 RegOperand::B64(Reg64 { id: 2 }),
                 AddrOperand::StackRelative(-8),
             ),
             // load values from memory (pointed to by arguments)
             Instruction::Load(
-                MemStateSpace::Global,
+                StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 3 }),
                 AddrOperand::RegisterRelative(Reg64 { id: 0 }, 0),
             ),
             Instruction::Load(
-                MemStateSpace::Global,
+                StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 4 }),
                 AddrOperand::RegisterRelative(Reg64 { id: 1 }, 0),
             ),
             // add values
-            Instruction::Add {
-                ty: Type::U64,
-                dst: RegOperand::B64(Reg64 { id: 5 }),
-                a: RegOperand::B64(Reg64 { id: 3 }),
-                b: RegOperand::B64(Reg64 { id: 4 }),
-            },
+            Instruction::Add(
+                Type::U64,
+                RegOperand::B64(Reg64 { id: 5 }),
+                RegOperand::B64(Reg64 { id: 3 }),
+                RegOperand::B64(Reg64 { id: 4 }),
+            ),
             // store result
             Instruction::Store(
-                MemStateSpace::Global,
+                StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 5 }),
                 AddrOperand::RegisterRelative(Reg64 { id: 2 }, 0),
             ),
@@ -760,26 +781,26 @@ mod test {
         let prog = vec![
             // load arguments into registers
             Instruction::Load(
-                MemStateSpace::Stack,
+                StateSpace::Stack,
                 RegOperand::B64(Reg64 { id: 0 }),
                 AddrOperand::StackRelative(-24),
             ),
             Instruction::Load(
-                MemStateSpace::Stack,
+                StateSpace::Stack,
                 RegOperand::B64(Reg64 { id: 1 }),
                 AddrOperand::StackRelative(-16),
             ),
             Instruction::Load(
-                MemStateSpace::Stack,
+                StateSpace::Stack,
                 RegOperand::B64(Reg64 { id: 2 }),
                 AddrOperand::StackRelative(-8),
             ),
             // load thread index
-            Instruction::Move {
-                ty: Type::U32,
-                dst: RegOperand::B32(Reg32 { id: 0 }),
-                src: RegOperand::Special(SpecialReg::TIdX),
-            },
+            Instruction::Move(
+                Type::U32,
+                RegOperand::B32(Reg32 { id: 0 }),
+                RegOperand::Special(SpecialReg::ThreadIdX),
+            ),
             Instruction::Convert {
                 dst_type: Type::U64,
                 src_type: Type::U32,
@@ -800,45 +821,45 @@ mod test {
                 RegOperand::B64(Reg64 { id: 7 }),
             ),
             // offset argument pointers by thread index
-            Instruction::Add {
-                ty: Type::U64,
-                dst: RegOperand::B64(Reg64 { id: 0 }),
-                a: RegOperand::B64(Reg64 { id: 0 }),
-                b: RegOperand::B64(Reg64 { id: 6 }),
-            },
-            Instruction::Add {
-                ty: Type::U64,
-                dst: RegOperand::B64(Reg64 { id: 1 }),
-                a: RegOperand::B64(Reg64 { id: 1 }),
-                b: RegOperand::B64(Reg64 { id: 6 }),
-            },
-            Instruction::Add {
-                ty: Type::U64,
-                dst: RegOperand::B64(Reg64 { id: 2 }),
-                a: RegOperand::B64(Reg64 { id: 2 }),
-                b: RegOperand::B64(Reg64 { id: 6 }),
-            },
+            Instruction::Add(
+                Type::U64,
+                RegOperand::B64(Reg64 { id: 0 }),
+                RegOperand::B64(Reg64 { id: 0 }),
+                RegOperand::B64(Reg64 { id: 6 }),
+            ),
+            Instruction::Add(
+                Type::U64,
+                RegOperand::B64(Reg64 { id: 1 }),
+                RegOperand::B64(Reg64 { id: 1 }),
+                RegOperand::B64(Reg64 { id: 6 }),
+            ),
+            Instruction::Add(
+                Type::U64,
+                RegOperand::B64(Reg64 { id: 2 }),
+                RegOperand::B64(Reg64 { id: 2 }),
+                RegOperand::B64(Reg64 { id: 6 }),
+            ),
             // load values from memory (pointed to by offset arguments)
             Instruction::Load(
-                MemStateSpace::Global,
+                StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 3 }),
                 AddrOperand::RegisterRelative(Reg64 { id: 0 }, 0),
             ),
             Instruction::Load(
-                MemStateSpace::Global,
+                StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 4 }),
                 AddrOperand::RegisterRelative(Reg64 { id: 1 }, 0),
             ),
             // add values
-            Instruction::Add {
-                ty: Type::U64,
-                dst: RegOperand::B64(Reg64 { id: 5 }),
-                a: RegOperand::B64(Reg64 { id: 3 }),
-                b: RegOperand::B64(Reg64 { id: 4 }),
-            },
+            Instruction::Add(
+                Type::U64,
+                RegOperand::B64(Reg64 { id: 5 }),
+                RegOperand::B64(Reg64 { id: 3 }),
+                RegOperand::B64(Reg64 { id: 4 }),
+            ),
             // store result
             Instruction::Store(
-                MemStateSpace::Global,
+                StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 5 }),
                 AddrOperand::RegisterRelative(Reg64 { id: 2 }, 0),
             ),
