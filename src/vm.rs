@@ -41,15 +41,7 @@ pub struct Reg128 {
     id: usize,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum Type {
-    B32,
-    U32,
-    S32,
-    B64,
-    U64,
-    S64,
-}
+use crate::ast::Type;
 
 #[derive(Clone, Copy, Debug)]
 pub enum PredicateOp {
@@ -73,7 +65,24 @@ pub enum RegOperand {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Constant {
+    B128(u128),
+    B64(u64),
+    B32(u32),
+    B16(u16),
+    B8(u8),
     U64(u64),
+    U32(u32),
+    U16(u16),
+    U8(u8),
+    S64(i64),
+    S32(i32),
+    S16(i16),
+    S8(i8),
+    F64(f64),
+    F32(f32),
+    F16x2(f32, f32),
+    F16(f32),
+    Pred(bool),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -100,7 +109,7 @@ pub enum Instruction {
         RegOperand,
         RegOperand,
     ),
-    Const(Type, RegOperand, Constant),
+    Const(RegOperand, Constant),
     Add(
         Type,
         RegOperand,
@@ -614,7 +623,7 @@ impl Context {
                         _ => todo!(),
                     }
                 }
-                Instruction::Const(ty, dst, value) => {
+                Instruction::Const(dst, value) => {
                     use RegOperand::*;
                     match (dst, value) {
                         (B64(dst), Constant::U64(value)) => {
@@ -809,7 +818,6 @@ mod test {
             },
             // multiply thread index by 8 (size of u64)
             Instruction::Const(
-                Type::U64,
                 RegOperand::B64(Reg64 { id: 7 }),
                 Constant::U64(8),
             ),

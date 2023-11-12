@@ -16,6 +16,14 @@ fn lex_version_number(lex: &mut Lexer<Token>) -> Option<Version> {
     Some(Version { major, minor })
 }
 
+fn lex_float32_constant(lex: &mut Lexer<Token>) -> Option<f32> {
+    todo!()
+}
+
+fn lex_float64_constant(lex: &mut Lexer<Token>) -> Option<f64> {
+    todo!()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum LexError {
     NumberParseError,
@@ -188,8 +196,13 @@ pub enum Token {
     #[regex(r"[a-zA-Z][a-zA-Z0-9_$]*|[_$%][a-zA-Z0-9_$]+", |lex| lex.slice().to_string())]
     Identifier(String),
 
-    #[regex(r"[0-9]+", |lex| lex.slice().parse().ok())]
-    Integer(i32),
+    #[regex(r"[0-9]+", |lex| lex.slice().parse().ok(), priority=2)]
+    IntegerConst(i64),
+    #[regex(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?", |lex| lex.slice().parse().ok())]
+    #[regex(r"0[dD][0-9a-fA-F]{16}", lex_float64_constant)]
+    Float64Const(f64),
+    #[regex(r"0[fF][0-9a-fA-F]{8}", lex_float32_constant)]
+    Float32Const(f32),
 
     #[regex(r"<\s*\+?\d+\s*>", lex_reg_multiplicity)]
     RegMultiplicity(u32),
@@ -377,57 +390,49 @@ impl StateSpace {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Type {
-    Bit128,
-    Bit64,
-    Bit32,
-    Bit16,
-    Bit8,
-    Unsigned64,
-    Unsigned32,
-    Unsigned16,
-    Unsigned8,
-    Signed64,
-    Signed32,
-    Signed16,
-    Signed8,
-    Float64,
-    Float32,
-    Float16x2,
-    Float16,
-    Predicate,
+    B128,
+    B64,
+    B32,
+    B16,
+    B8,
+    U64,
+    U32,
+    U16,
+    U8,
+    S64,
+    S32,
+    S16,
+    S8,
+    F64,
+    F32,
+    F16x2,
+    F16,
+    Pred,
 }
 
 impl Type {
     pub fn size(&self) -> usize {
         use Type::*;
         match self {
-            Bit128 => 16,
-            Bit64 | Unsigned64 | Signed64 | Float64 => 8,
-            Bit32 | Unsigned32 | Signed32 | Float32 | Float16x2 => 4,
-            Bit16 | Unsigned16 | Signed16 | Float16 => 2,
-            Bit8 | Unsigned8 | Signed8 => 1,
-            Predicate => 0,
+            B128 => 16,
+            B64 | U64 | S64 | F64 => 8,
+            B32 | U32 | S32 | F32 | F16x2 => 4,
+            B16 | U16 | S16 | F16 => 2,
+            B8 | U8 | S8 => 1,
+            Pred => 0,
         }
     }
 
     pub fn alignment(&self) -> usize {
         use Type::*;
         match self {
-            Predicate => 1,
+            Pred => 1,
             t => t.size(),
         }
     }
 
-    pub fn to_vm(&self) -> vm::Type {
-        match self {
-            Type::Bit32 => vm::Type::B32,
-            Type::Bit64 => vm::Type::B64,
-            Type::Signed32 => vm::Type::S32,
-            Type::Signed64 => vm::Type::S64,
-            Type::Unsigned32 => vm::Type::U32,
-            Type::Unsigned64 => vm::Type::U64,
-            _ => todo!(),
-        }
+    pub fn to_vm(&self) -> Self {
+        *self
     }
 }
 
@@ -471,7 +476,7 @@ pub struct VarDecl {
 #[derive(Debug, Clone)]
 pub enum AddressOperand {
     Address(Ident),
-    AddressOffset(Ident, i32),
+    AddressOffset(Ident, i64),
     AddressOffsetVar(Ident, Ident),
     ArrayIndex(Ident, usize),
 }
@@ -491,8 +496,14 @@ impl AddressOperand {
 pub enum Operand {
     SpecialReg(SpecialReg),
     Variable(Ident),
-    Immediate(i32),
+    Immediate(Immediate),
     Address(AddressOperand),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Immediate {
+    Float(f64),
+    Integer(i64),
 }
 
 #[derive(Debug)]
@@ -595,7 +606,7 @@ fn parse_target(mut scanner: Scanner) -> ParseResult<String> {
 fn parse_address_size(mut scanner: Scanner) -> ParseResult<AddressSize> {
     scanner.consume(Token::AddressSize)?;
     let size = scanner.pop().ok_or(ParseErr::UnexpectedEof)?;
-    let Token::Integer(size) = size else {
+    let Token::IntegerConst(size) = size else {
         return Err(ParseErr::UnexpectedToken(size.clone()));
     };
     match size {
@@ -626,7 +637,7 @@ fn parse_array_bounds(mut scanner: Scanner) -> ParseResult<Vec<u32>> {
             Some(Token::LeftBracket) => scanner.skip(),
             _ => break Ok((bounds, scanner)),
         }
-        let Token::Integer(bound) = scanner.must_pop()? else {
+        let Token::IntegerConst(bound) = scanner.must_pop()? else {
             return Err(ParseErr::UnexpectedToken(scanner.must_get()?.clone()));
         };
         scanner.consume(Token::RightBracket)?;
@@ -650,7 +661,7 @@ fn parse_state_space(mut scanner: Scanner) -> ParseResult<StateSpace> {
 fn parse_alignment(mut scanner: Scanner) -> ParseResult<u32> {
     scanner.consume(Token::Align)?;
     let alignment = match scanner.must_pop()? {
-        Token::Integer(i) => *i as u32,
+        Token::IntegerConst(i) => *i as u32,
         t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
     Ok((alignment, scanner))
@@ -658,24 +669,24 @@ fn parse_alignment(mut scanner: Scanner) -> ParseResult<u32> {
 
 fn parse_type(mut scanner: Scanner) -> ParseResult<Type> {
     let ty = match scanner.must_pop()? {
-        Token::Bit8 => Type::Bit8,
-        Token::Bit16 => Type::Bit16,
-        Token::Bit32 => Type::Bit32,
-        Token::Bit64 => Type::Bit64,
-        Token::Bit128 => Type::Bit128,
-        Token::Unsigned8 => Type::Unsigned8,
-        Token::Unsigned16 => Type::Unsigned16,
-        Token::Unsigned32 => Type::Unsigned32,
-        Token::Unsigned64 => Type::Unsigned64,
-        Token::Signed8 => Type::Signed8,
-        Token::Signed16 => Type::Signed16,
-        Token::Signed32 => Type::Signed32,
-        Token::Signed64 => Type::Signed64,
-        Token::Float16 => Type::Float16,
-        Token::Float16x2 => Type::Float16x2,
-        Token::Float32 => Type::Float32,
-        Token::Float64 => Type::Float64,
-        Token::Predicate => Type::Predicate,
+        Token::Bit8 => Type::B8,
+        Token::Bit16 => Type::B16,
+        Token::Bit32 => Type::B32,
+        Token::Bit64 => Type::B64,
+        Token::Bit128 => Type::B128,
+        Token::Unsigned8 => Type::U8,
+        Token::Unsigned16 => Type::U16,
+        Token::Unsigned32 => Type::U32,
+        Token::Unsigned64 => Type::U64,
+        Token::Signed8 => Type::S8,
+        Token::Signed16 => Type::S16,
+        Token::Signed32 => Type::S32,
+        Token::Signed64 => Type::S64,
+        Token::Float16 => Type::F16,
+        Token::Float16x2 => Type::F16x2,
+        Token::Float32 => Type::F32,
+        Token::Float64 => Type::F64,
+        Token::Predicate => Type::Pred,
         t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
     Ok((ty, scanner))
@@ -919,7 +930,8 @@ fn parse_operand(mut scanner: Scanner) -> ParseResult<Operand> {
     }
     // then fall back to other options
     let operand = match scanner.must_pop()? {
-        Token::Integer(i) => Operand::Immediate(*i),
+        Token::IntegerConst(i) => Operand::Immediate(Immediate::Integer(*i)),
+        Token::Float64Const(f) => Operand::Immediate(Immediate::Float(*f)),
         Token::Identifier(s) => {
             if let Some(Token::LeftBracket) = scanner.get() {
                 // array syntax
@@ -936,7 +948,7 @@ fn parse_operand(mut scanner: Scanner) -> ParseResult<Operand> {
             let res = if let Some(Token::Plus) = scanner.get() {
                 scanner.skip();
                 match scanner.must_pop()? {
-                    Token::Integer(i) => Operand::Address(AddressOperand::AddressOffset(ident, *i)),
+                    Token::IntegerConst(i) => Operand::Address(AddressOperand::AddressOffset(ident, *i)),
                     Token::Identifier(s) => {
                         Operand::Address(AddressOperand::AddressOffsetVar(ident, s.clone()))
                     }

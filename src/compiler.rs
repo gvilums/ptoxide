@@ -3,11 +3,13 @@ use std::collections::HashMap;
 use crate::ast;
 use crate::vm;
 
+#[derive(Debug, Clone, Copy)]
 pub enum Symbol {
     Function(usize),
     Variable(usize),
 }
 
+#[derive(Debug)]
 pub struct CompiledModule {
     pub instructions: Vec<vm::Instruction>,
     pub func_descriptors: Vec<vm::FuncFrameDesc>,
@@ -23,6 +25,8 @@ pub enum CompilationError {
     InvalidStateSpace,
     #[error("invalid operand: {0:?}")]
     InvalidOperand(ast::Operand),
+    #[error("invalid immediate type")]
+    InvalidImmediateType,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -84,15 +88,19 @@ impl CompiledModule {
         let iptr = vm::IPtr(self.instructions.len());
         let mut state = FuncCodegenState::new(self);
         state.compile_ast(func)?;
-        let (mut frame_desc, instructions) = state.finalize();
+        let (ident, mut frame_desc, instructions) = state.finalize();
         frame_desc.iptr = iptr;
         self.instructions.extend(instructions);
-        todo!("register function descriptor, add to symbol map")
+        let desc = Symbol::Function(self.func_descriptors.len());
+        self.func_descriptors.push(frame_desc);
+        self.symbol_map.insert(ident, desc);
+        Ok(())
     }
 }
 
 struct FuncCodegenState<'a> {
     parent: &'a CompiledModule,
+    ident: String,
     instructions: Vec<vm::Instruction>,
     var_map: VariableMap,
     regs: vm::RegDesc,
@@ -104,6 +112,7 @@ impl<'a> FuncCodegenState<'a> {
     pub fn new(parent: &'a CompiledModule) -> Self {
         Self {
             parent,
+            ident: String::new(),
             instructions: Vec::new(),
             var_map: VariableMap::new(),
             regs: vm::RegDesc::default(),
@@ -119,18 +128,18 @@ impl<'a> FuncCodegenState<'a> {
         match decl.state_space {
             StateSpace::Register => {
                 let opref = match decl.ty {
-                    Bit128 => RegOperand::B128(self.regs.alloc_b128()),
-                    Bit64 | Unsigned64 | Signed64 | Float64 => {
+                    B128 => RegOperand::B128(self.regs.alloc_b128()),
+                    B64 | U64 | S64 | F64 => {
                         RegOperand::B64(self.regs.alloc_b64())
                     }
-                    Bit32 | Unsigned32 | Signed32 | Float32 | Float16x2 => {
+                    B32 | U32 | S32 | F32 | F16x2 => {
                         RegOperand::B32(self.regs.alloc_b32())
                     }
-                    Bit16 | Unsigned16 | Signed16 | Float16 => {
+                    B16 | U16 | S16 | F16 => {
                         RegOperand::B16(self.regs.alloc_b16())
                     }
-                    Bit8 | Unsigned8 | Signed8 => RegOperand::B8(self.regs.alloc_b8()),
-                    Predicate => RegOperand::Pred(self.regs.alloc_pred()),
+                    B8 | U8 | S8 => RegOperand::B8(self.regs.alloc_b8()),
+                    Pred => RegOperand::Pred(self.regs.alloc_pred()),
                 };
                 self.var_map.insert(decl.ident, Variable::Register(opref));
             }
@@ -161,19 +170,20 @@ impl<'a> FuncCodegenState<'a> {
 
     fn handle_params(&mut self, params: Vec<ast::FunctionParam>) -> Result<(), CompilationError> {
         for param in params.iter().rev() {
-            if matches!(param.ty, ast::Type::Predicate) {
+            if matches!(param.ty, ast::Type::Pred) {
                 // this should raise an error as predicates can only exist in the reg state space
                 todo!()
             }
+
+            // account for the size of the parameter
+            self.param_stack_offset += param.ty.size();
+
             // align to required alignment
             assert!(param.ty.alignment().count_ones() == 1);
             self.param_stack_offset =
                 (self.param_stack_offset + param.ty.alignment() - 1) & !(param.ty.alignment() - 1);
 
             let loc = vm::AddrOperand::StackRelative(-(self.param_stack_offset as isize));
-
-            // account for the size of the parameter
-            self.param_stack_offset += param.ty.size();
 
             self.var_map
                 .insert(param.ident.clone(), Variable::Memory(loc));
@@ -183,15 +193,28 @@ impl<'a> FuncCodegenState<'a> {
 
     fn construct_immediate(
         &mut self,
-        ty: vm::Type,
-        imm: i32,
+        ty: ast::Type,
+        imm: ast::Immediate,
     ) -> Result<vm::RegOperand, CompilationError> {
-        todo!()
+        use ast::Type::*;
+        use vm::RegOperand;
+        let opref = match ty {
+            U32 => {
+                let reg = RegOperand::B32(self.regs.alloc_b32());
+                let ast::Immediate::Integer(val) = imm else {
+                    return Err(CompilationError::InvalidImmediateType)
+                };
+                self.instructions.push(vm::Instruction::Const(reg, vm::Constant::U32(val as u32)));
+                reg
+            }
+            _ => todo!()
+        };
+        Ok(opref)
     }
 
     fn get_src_reg(
         &mut self,
-        ty: vm::Type,
+        ty: ast::Type,
         op: &ast::Operand,
     ) -> Result<vm::RegOperand, CompilationError> {
         use ast::Operand;
@@ -205,7 +228,7 @@ impl<'a> FuncCodegenState<'a> {
 
     fn get_dst_reg(
         &mut self,
-        ty: vm::Type,
+        ty: ast::Type,
         op: &ast::Operand,
     ) -> Result<vm::RegOperand, CompilationError> {
         use ast::Operand;
@@ -217,7 +240,7 @@ impl<'a> FuncCodegenState<'a> {
 
     fn reg_dst_2src(
         &mut self,
-        ty: vm::Type,
+        ty: ast::Type,
         ops: &[ast::Operand],
     ) -> Result<[vm::RegOperand; 3], CompilationError> {
         let [dst, lhs_op, rhs_op] = ops else { todo!() };
@@ -349,7 +372,8 @@ impl<'a> FuncCodegenState<'a> {
             }
             MultiplyAdd(_, _) => todo!(),
             Convert { from, to } => todo!(),
-            ConvertAddress(ty, st) => {
+            ConvertAddress(ty, st) => todo!(),
+            ConvertAddressTo(ty, st) => {
                 // for now, just move the address register into the destination register
                 let [dst, src] = instr.operands.as_slice() else {
                     todo!();
@@ -359,8 +383,7 @@ impl<'a> FuncCodegenState<'a> {
                 let src_reg = self.get_src_reg(ty, src)?;
                 self.instructions
                     .push(vm::Instruction::Move(ty, dst_reg, src_reg));
-            }
-            ConvertAddressTo(_, _) => todo!(),
+            },
             SetPredicate(_, _) => todo!(),
             ShiftLeft(_) => todo!(),
             Call {
@@ -387,6 +410,7 @@ impl<'a> FuncCodegenState<'a> {
     }
 
     pub fn compile_ast(&mut self, func: ast::Function) -> Result<(), CompilationError> {
+        self.ident = func.ident;
         let ast::Statement::Grouping(body) = *func.body else {
             todo!()
         };
@@ -411,7 +435,7 @@ impl<'a> FuncCodegenState<'a> {
         Ok(())
     }
 
-    pub fn finalize(self) -> (vm::FuncFrameDesc, Vec<vm::Instruction>) {
+    pub fn finalize(self) -> (String, vm::FuncFrameDesc, Vec<vm::Instruction>) {
         // align stack size to 16 bytes
         let aligned_stack = (self.stack_size + 15) & !15;
         let frame_desc = vm::FuncFrameDesc {
@@ -420,7 +444,7 @@ impl<'a> FuncCodegenState<'a> {
             arg_size: self.param_stack_offset,
             regs: self.regs,
         };
-        (frame_desc, self.instructions)
+        (self.ident, frame_desc, self.instructions)
     }
 }
 
