@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use crate::ast::MulMode;
 use crate::ast::SpecialReg;
 
-
 #[derive(Debug, Clone, Copy)]
 pub enum Symbol {
     Function(usize),
@@ -50,8 +49,8 @@ pub struct Reg128 {
     id: usize,
 }
 
-use crate::ast::Type;
 use crate::ast::PredicateOp;
+use crate::ast::Type;
 
 #[derive(Clone, Copy, Debug)]
 pub enum RegOperand {
@@ -105,18 +104,9 @@ pub enum Instruction {
         dst: RegOperand,
         src: RegOperand,
     },
-    Move(
-        Type,
-        RegOperand,
-        RegOperand,
-    ),
+    Move(Type, RegOperand, RegOperand),
     Const(RegOperand, Constant),
-    Add(
-        Type,
-        RegOperand,
-        RegOperand,
-        RegOperand,
-    ),
+    Add(Type, RegOperand, RegOperand, RegOperand),
     Mul(Type, MulMode, RegOperand, RegOperand, RegOperand),
     ShiftLeft(Type, RegOperand, RegOperand, RegOperand),
     SetPredicate(Type, PredicateOp, RegPred, RegOperand, RegOperand),
@@ -201,7 +191,7 @@ pub struct Context {
     global_mem: Vec<u8>,
     instructions: Vec<Instruction>,
     descriptors: Vec<FuncFrameDesc>,
-    symbol_map: HashMap<String, Symbol>
+    symbol_map: HashMap<String, Symbol>,
 }
 
 #[derive(Debug)]
@@ -227,6 +217,34 @@ impl Registers {
     }
 }
 
+macro_rules! generate_reg_functions {
+    ($($t:ident, $get:ident, $set:ident, $field:ident, $n:expr);*) => {
+        $(
+            fn $get(&self, reg: $t) -> [u8; $n] {
+                self.regs.last().unwrap().$field[reg.id]
+            }
+
+            fn $set(&mut self, reg: $t, value: [u8; $n]) {
+                self.regs.last_mut().unwrap().$field[reg.id] = value;
+            }
+        )*
+    };
+}
+
+macro_rules! generate_reg_functions2 {
+    ($($t:ident, $get:ident, $set:ident, $field:ident, $t2:ident);*) => {
+        $(
+            fn $get(&self, reg: $t) -> $t2 {
+                $t2::from_ne_bytes(self.regs.last().unwrap().$field[reg.id])
+            }
+
+            fn $set(&mut self, reg: $t, value: $t2) {
+                self.regs.last_mut().unwrap().$field[reg.id] = value.to_ne_bytes();
+            }
+        )*
+    };
+}
+
 impl ThreadState {
     fn new() -> ThreadState {
         ThreadState {
@@ -246,45 +264,33 @@ impl ThreadState {
         self.regs.last_mut().unwrap().pred[reg.id] = value;
     }
 
-    fn get_b8(&self, reg: Reg8) -> [u8; 1] {
-        self.regs.last().unwrap().b8[reg.id]
-    }
+    generate_reg_functions!(
+        Reg8, get_b8, set_b8, b8, 1;
+        Reg16, get_b16, set_b16, b16, 2;
+        Reg32, get_b32, set_b32, b32, 4;
+        Reg64, get_b64, set_b64, b64, 8;
+        Reg128, get_b128, set_b128, b128, 16
+    );
 
-    fn set_b8(&mut self, reg: Reg8, value: [u8; 1]) {
-        self.regs.last_mut().unwrap().b8[reg.id] = value;
-    }
+    generate_reg_functions2!(
+        Reg8, get_u8, set_u8, b8, u8;
+        Reg16, get_u16, set_u16, b16, u16;
+        Reg32, get_u32, set_u32, b32, u32;
+        Reg64, get_u64, set_u64, b64, u64;
+        Reg128, get_u128, set_u128, b128, u128;
 
-    fn get_b16(&self, reg: Reg16) -> [u8; 2] {
-        self.regs.last().unwrap().b16[reg.id]
-    }
+        Reg8, get_i8, set_i8, b8, i8;
+        Reg16, get_i16, set_i16, b16, i16;
+        Reg32, get_i32, set_i32, b32, i32;
+        Reg64, get_i64, set_i64, b64, i64;
+        Reg128, get_i128, set_i128, b128, i128;
 
-    fn set_b16(&mut self, reg: Reg16, value: [u8; 2]) {
-        self.regs.last_mut().unwrap().b16[reg.id] = value;
-    }
-
-    fn get_b32(&self, reg: Reg32) -> [u8; 4] {
-        self.regs.last().unwrap().b32[reg.id]
-    }
-
-    fn set_b32(&mut self, reg: Reg32, value: [u8; 4]) {
-        self.regs.last_mut().unwrap().b32[reg.id] = value;
-    }
-
-    fn get_b64(&self, reg: Reg64) -> [u8; 8] {
-        self.regs.last().unwrap().b64[reg.id]
-    }
-
-    fn set_b64(&mut self, reg: Reg64, value: [u8; 8]) {
-        self.regs.last_mut().unwrap().b64[reg.id] = value;
-    }
-
-    fn get_b128(&self, reg: Reg128) -> [u8; 16] {
-        self.regs.last().unwrap().b128[reg.id]
-    }
-
-    fn set_b128(&mut self, reg: Reg128, value: [u8; 16]) {
-        self.regs.last_mut().unwrap().b128[reg.id] = value;
-    }
+        // Reg8, get_f8, set_f8, b8, f32;
+        // Reg16, get_f16, set_f16, b16, f16;
+        Reg32, get_f32, set_f32, b32, f32;
+        Reg64, get_f64, set_f64, b64, f64
+        // Reg128, get_f128, set_f128, b128, f64
+    );
 
     fn iptr_fetch_incr(&mut self) -> IPtr {
         let ret = self.iptr;
@@ -350,7 +356,7 @@ pub enum VmError {
     #[error("Parse error: {0:?}")]
     ParseError(#[from] crate::ast::ParseErr),
     #[error("Compile error: {0:?}")]
-    CompileError(#[from] crate::compiler::CompilationError)
+    CompileError(#[from] crate::compiler::CompilationError),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -550,37 +556,27 @@ impl Context {
                         o => return Err(VmError::InvalidOperand(inst, o)),
                     }
                 }
-                Instruction::Add(ty, dst, a, b ) => {
+                Instruction::Add(ty, dst, a, b) => {
                     use RegOperand::*;
                     match (dst, a, b) {
                         (B64(dst), B64(a), B64(b)) => match ty {
                             Type::U64 | Type::B64 => {
-                                let a = u64::from_ne_bytes(state.get_b64(a));
-                                let b = u64::from_ne_bytes(state.get_b64(b));
-                                state.set_b64(dst, (a + b).to_ne_bytes());
+                                state.set_u64(dst, state.get_u64(a) + state.get_u64(b));
                             }
                             Type::S64 => {
-                                let a = i64::from_ne_bytes(state.get_b64(a));
-                                let b = i64::from_ne_bytes(state.get_b64(b));
-                                state.set_b64(dst, (a + b).to_ne_bytes());
+                                state.set_i64(dst, state.get_i64(a) + state.get_i64(b));
                             }
                             _ => todo!(),
                         },
                         (B32(dst), B32(a), B32(b)) => match ty {
                             Type::U32 | Type::B32 => {
-                                let a = u32::from_ne_bytes(state.get_b32(a));
-                                let b = u32::from_ne_bytes(state.get_b32(b));
-                                state.set_b32(dst, (a + b).to_ne_bytes());
+                                state.set_u32(dst, state.get_u32(a) + state.get_u32(b));
                             }
                             Type::S32 => {
-                                let a = i32::from_ne_bytes(state.get_b32(a));
-                                let b = i32::from_ne_bytes(state.get_b32(b));
-                                state.set_b32(dst, (a + b).to_ne_bytes());
+                                state.set_i32(dst, state.get_i32(a) + state.get_i32(b));
                             }
                             Type::F32 => {
-                                let a = f32::from_ne_bytes(state.get_b32(a));
-                                let b = f32::from_ne_bytes(state.get_b32(b));
-                                state.set_b32(dst, (a + b).to_ne_bytes());
+                                state.set_f32(dst, state.get_f32(a) + state.get_f32(b));
                             }
                             _ => todo!(),
                         },
@@ -592,30 +588,25 @@ impl Context {
                     match (mode, dst, a, b) {
                         (MulMode::Low, B64(dst), B64(a), B64(b)) => match ty {
                             Type::U64 | Type::B64 => {
-                                let a = u64::from_ne_bytes(state.get_b64(a));
-                                let b = u64::from_ne_bytes(state.get_b64(b));
-                                state.set_b64(dst, (a * b).to_ne_bytes());
+                                state.set_u64(dst, state.get_u64(a) * state.get_u64(b));
                             }
                             _ => todo!(),
                         },
                         (MulMode::Low, B32(dst), B32(a), B32(b)) => match ty {
                             Type::U32 | Type::B32 => {
-                                let a = u32::from_ne_bytes(state.get_b32(a));
-                                let b = u32::from_ne_bytes(state.get_b32(b));
-                                state.set_b32(dst, (a * b).to_ne_bytes());
+                                state.set_u32(dst, state.get_u32(a) * state.get_u32(b));
                             }
                             Type::S32 => {
-                                let a = i32::from_ne_bytes(state.get_b32(a));
-                                let b = i32::from_ne_bytes(state.get_b32(b));
-                                state.set_b32(dst, (a * b).to_ne_bytes());
+                                state.set_i32(dst, state.get_i32(a) * state.get_i32(b));
                             }
                             _ => todo!(),
                         },
                         (MulMode::Wide, B64(dst), B32(a), B32(b)) => match ty {
                             Type::U32 => {
-                                let a = u32::from_ne_bytes(state.get_b32(a));
-                                let b = u32::from_ne_bytes(state.get_b32(b));
-                                state.set_b64(dst, (a as u64 * b as u64).to_ne_bytes());
+                                state.set_u64(
+                                    dst,
+                                    state.get_u32(a) as u64 * state.get_u32(b) as u64,
+                                );
                             }
                             _ => todo!(),
                         },
@@ -627,9 +618,7 @@ impl Context {
                     match (dst, a, b) {
                         (B64(dst), B64(a), B64(b)) => match ty {
                             Type::U64 | Type::B64 => {
-                                let a = u64::from_ne_bytes(state.get_b64(a));
-                                let b = u64::from_ne_bytes(state.get_b64(b));
-                                state.set_b64(dst, (a << b).to_ne_bytes());
+                                state.set_u64(dst, state.get_u64(a) << state.get_u64(b));
                             }
                             _ => todo!(),
                         },
@@ -645,8 +634,7 @@ impl Context {
                     use RegOperand::*;
                     match (dst_type, src_type, dst, src) {
                         (Type::U64, Type::U32, B64(dst), B32(src)) => {
-                            let val = u32::from_ne_bytes(state.get_b32(src)) as u64;
-                            state.set_b64(dst, val.to_ne_bytes());
+                            state.set_u64(dst, state.get_u32(src) as u64);
                         }
                         _ => todo!(),
                     }
@@ -658,16 +646,16 @@ impl Context {
                             state.set_b64(dst, state.get_b64(src));
                         }
                         (B32(dst), Special(SpecialReg::ThreadIdX)) => {
-                            state.set_b32(dst, tid.0.to_ne_bytes());
+                            state.set_u32(dst, tid.0);
                         }
                         (B32(dst), Special(SpecialReg::NumThreadX)) => {
-                            state.set_b32(dst, ntid.0.to_ne_bytes());
+                            state.set_u32(dst, ntid.0);
                         }
                         (B32(dst), Special(SpecialReg::CtaIdX)) => {
-                            state.set_b32(dst, ctaid.0.to_ne_bytes());
+                            state.set_u32(dst, ctaid.0);
                         }
                         (B32(dst), Special(SpecialReg::NumCtaX)) => {
-                            state.set_b32(dst, nctaid.0.to_ne_bytes());
+                            state.set_u32(dst, nctaid.0);
                         }
                         _ => todo!(),
                     }
@@ -675,31 +663,27 @@ impl Context {
                 Instruction::Const(dst, value) => {
                     use RegOperand::*;
                     match (dst, value) {
-                        (B64(dst), Constant::U64(value)) => 
-                            state.set_b64(dst, value.to_ne_bytes()),
-                        (B32(dst), Constant::U32(value)) => 
-                            state.set_b32(dst, value.to_ne_bytes()),
+                        (B64(dst), Constant::U64(value)) => state.set_u64(dst, value),
+                        (B32(dst), Constant::U32(value)) => state.set_u32(dst, value),
                         _ => todo!(),
                     }
                 }
-                Instruction::SetPredicate(ty, op, dst, a, b) => {
-                    match (ty, a, b) {
-                        (Type::U64, RegOperand::B64(a), RegOperand::B64(b)) => {
-                            let a = u64::from_ne_bytes(state.get_b64(a));
-                            let b = u64::from_ne_bytes(state.get_b64(b));
-                            let value = match op {
-                                PredicateOp::LessThan => a < b,
-                                PredicateOp::LessThanEqual => a <= b,
-                                PredicateOp::Equal => a == b,
-                                PredicateOp::NotEqual => a != b,
-                                PredicateOp::GreaterThan => a > b,
-                                PredicateOp::GreaterThanEqual => a >= b,
-                            };
-                            state.set_pred(dst, value);
-                        }
-                        _ => todo!(),
+                Instruction::SetPredicate(ty, op, dst, a, b) => match (ty, a, b) {
+                    (Type::U64, RegOperand::B64(a), RegOperand::B64(b)) => {
+                        let a = u64::from_ne_bytes(state.get_b64(a));
+                        let b = u64::from_ne_bytes(state.get_b64(b));
+                        let value = match op {
+                            PredicateOp::LessThan => a < b,
+                            PredicateOp::LessThanEqual => a <= b,
+                            PredicateOp::Equal => a == b,
+                            PredicateOp::NotEqual => a != b,
+                            PredicateOp::GreaterThan => a > b,
+                            PredicateOp::GreaterThanEqual => a >= b,
+                        };
+                        state.set_pred(dst, value);
                     }
-                }
+                    _ => todo!(),
+                },
                 Instruction::Jump { offset } => {
                     state.iptr.0 = (state.iptr.0 as isize + offset - 1) as usize;
                 }
@@ -872,10 +856,7 @@ mod test {
                 src: RegOperand::B32(Reg32 { id: 0 }),
             },
             // multiply thread index by 8 (size of u64)
-            Instruction::Const(
-                RegOperand::B64(Reg64 { id: 7 }),
-                Constant::U64(8),
-            ),
+            Instruction::Const(RegOperand::B64(Reg64 { id: 7 }), Constant::U64(8)),
             Instruction::Mul(
                 Type::U64,
                 MulMode::Low,
