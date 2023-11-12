@@ -15,12 +15,16 @@ pub struct CompiledModule {
 pub enum CompilationError {
     #[error("undefined symbol: {0:?}")]
     UndefinedSymbol(String),
+    #[error("undefined label: {0:?}")]
+    UndefinedLabel(String),
     #[error("invalid state space")]
     InvalidStateSpace,
     #[error("invalid operand: {0:?}")]
     InvalidOperand(ast::Operand),
     #[error("invalid immediate type")]
     InvalidImmediateType,
+    #[error("invalid register type: {0:?}")]
+    InvalidRegisterType(vm::RegOperand),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -41,6 +45,17 @@ impl VariableMap {
 
     pub fn get(&self, ident: &str) -> Option<&Variable> {
         self.0.get(ident)
+    }
+
+    pub fn get_pred(&self, ident: &str) -> Result<vm::RegPred, CompilationError> {
+        match self.0.get(ident) {
+            Some(Variable::Register(reg)) => match reg {
+                vm::RegOperand::Pred(pred) => Ok(*pred),
+                _ => Err(CompilationError::InvalidRegisterType(*reg)),
+            },
+            Some(Variable::Memory(addr)) => Err(CompilationError::InvalidStateSpace),
+            _ => Err(CompilationError::UndefinedSymbol(ident.to_string())),
+        }
     }
 
     pub fn get_reg(&self, ident: &str) -> Result<vm::RegOperand, CompilationError> {
@@ -82,7 +97,7 @@ impl CompiledModule {
         let iptr = vm::IPtr(self.instructions.len());
         let mut state = FuncCodegenState::new(self);
         state.compile_ast(func)?;
-        let (ident, mut frame_desc, instructions) = state.finalize();
+        let (ident, mut frame_desc, instructions) = state.finalize()?;
         frame_desc.iptr = iptr;
         self.instructions.extend(instructions);
         let desc = vm::Symbol::Function(self.func_descriptors.len());
@@ -100,6 +115,8 @@ struct FuncCodegenState<'a> {
     regs: vm::RegDesc,
     stack_size: usize,
     param_stack_offset: usize,
+    label_map: HashMap<String, usize>,
+    jump_map: Vec<String>,
 }
 
 impl<'a> FuncCodegenState<'a> {
@@ -112,6 +129,8 @@ impl<'a> FuncCodegenState<'a> {
             regs: vm::RegDesc::default(),
             stack_size: 0,
             param_stack_offset: 0,
+            label_map: HashMap::new(),
+            jump_map: Vec::new(),
         }
     }
 
@@ -123,15 +142,9 @@ impl<'a> FuncCodegenState<'a> {
             StateSpace::Register => {
                 let opref = match decl.ty {
                     B128 => RegOperand::B128(self.regs.alloc_b128()),
-                    B64 | U64 | S64 | F64 => {
-                        RegOperand::B64(self.regs.alloc_b64())
-                    }
-                    B32 | U32 | S32 | F32 | F16x2 => {
-                        RegOperand::B32(self.regs.alloc_b32())
-                    }
-                    B16 | U16 | S16 | F16 => {
-                        RegOperand::B16(self.regs.alloc_b16())
-                    }
+                    B64 | U64 | S64 | F64 => RegOperand::B64(self.regs.alloc_b64()),
+                    B32 | U32 | S32 | F32 | F16x2 => RegOperand::B32(self.regs.alloc_b32()),
+                    B16 | U16 | S16 | F16 => RegOperand::B16(self.regs.alloc_b16()),
                     B8 | U8 | S8 => RegOperand::B8(self.regs.alloc_b8()),
                     Pred => RegOperand::Pred(self.regs.alloc_pred()),
                 };
@@ -193,15 +206,25 @@ impl<'a> FuncCodegenState<'a> {
         use ast::Type::*;
         use vm::RegOperand;
         let opref = match ty {
-            U32 => {
+            U32 | B32 => {
                 let reg = RegOperand::B32(self.regs.alloc_b32());
                 let ast::Immediate::Integer(val) = imm else {
-                    return Err(CompilationError::InvalidImmediateType)
+                    return Err(CompilationError::InvalidImmediateType);
                 };
-                self.instructions.push(vm::Instruction::Const(reg, vm::Constant::U32(val as u32)));
+                self.instructions
+                    .push(vm::Instruction::Const(reg, vm::Constant::U32(val as u32)));
                 reg
             }
-            _ => todo!()
+            U64 | B64 => {
+                let reg = RegOperand::B64(self.regs.alloc_b64());
+                let ast::Immediate::Integer(val) = imm else {
+                    return Err(CompilationError::InvalidImmediateType);
+                };
+                self.instructions
+                    .push(vm::Instruction::Const(reg, vm::Constant::U64(val as u64)));
+                reg
+            }
+            _ => todo!(),
         };
         Ok(opref)
     }
@@ -232,6 +255,29 @@ impl<'a> FuncCodegenState<'a> {
         }
     }
 
+    fn reg_pred_2src(
+        &mut self,
+        ty: ast::Type,
+        ops: &[ast::Operand],
+    ) -> Result<(vm::RegPred, vm::RegOperand, vm::RegOperand), CompilationError> {
+        let [ast::Operand::Variable(dst), lhs_op, rhs_op] = ops else { todo!() };
+        let dst_reg = self.var_map.get_pred(dst)?;
+        let lhs_reg = self.get_src_reg(ty, lhs_op)?;
+        let rhs_reg = self.get_src_reg(ty, rhs_op)?;
+        Ok((dst_reg, lhs_reg, rhs_reg))
+    }
+
+    fn reg_dst_1src(
+        &mut self,
+        ty: ast::Type,
+        ops: &[ast::Operand],
+    ) -> Result<[vm::RegOperand; 2], CompilationError> {
+        let [dst, src ] = ops else { todo!() };
+        let dst_reg = self.get_dst_reg(ty, dst)?;
+        let src_reg = self.get_src_reg(ty, src)?;
+        Ok([dst_reg, src_reg])
+    }
+
     fn reg_dst_2src(
         &mut self,
         ty: ast::Type,
@@ -244,11 +290,41 @@ impl<'a> FuncCodegenState<'a> {
         Ok([dst_reg, lhs_reg, rhs_reg])
     }
 
+    fn reg_dst_3src(
+        &mut self,
+        ty: ast::Type,
+        ops: &[ast::Operand],
+    ) -> Result<[vm::RegOperand; 4], CompilationError> {
+        let [dst, src1_op, src2_op, src3_op] = ops else {
+            todo!()
+        };
+        let dst_reg = self.get_dst_reg(ty, dst)?;
+        let src1_reg = self.get_src_reg(ty, src1_op)?;
+        let src2_reg = self.get_src_reg(ty, src2_op)?;
+        let src3_reg = self.get_src_reg(ty, src3_op)?;
+        Ok([dst_reg, src1_reg, src2_reg, src3_reg])
+    }
+
     fn handle_instruction(&mut self, instr: ast::Instruction) -> Result<(), CompilationError> {
         use ast::AddressOperand;
         use ast::InstructionSpecifier::*;
         use ast::Operand;
         use vm::AddrOperand;
+
+        if let Some(label) = instr.label {
+            self.label_map.insert(label, self.instructions.len());
+        }
+
+        if let Some(guard) = instr.guard {
+            let (ident, expected) = match guard {
+                ast::Guard::Normal(s) => (s, true),
+                ast::Guard::Negated(s) => (s, false),
+            };
+            let guard_reg = self.var_map.get_pred(&ident)?;
+            self.instructions
+                .push(vm::Instruction::SkipIf(guard_reg, expected));
+        }
+
         match instr.specifier {
             Load(st, ty) => {
                 let [Operand::Variable(ident), Operand::Address(addr_op)] =
@@ -344,42 +420,59 @@ impl<'a> FuncCodegenState<'a> {
                 let [dst, src] = instr.operands.as_slice() else {
                     todo!()
                 };
-                let ty = ty.to_vm();
                 let src_reg = self.get_src_reg(ty, src)?;
                 let dst_reg = self.get_dst_reg(ty, dst)?;
                 self.instructions
                     .push(vm::Instruction::Move(ty, dst_reg, src_reg));
             }
             Add(ty) => {
-                let ty = ty.to_vm();
                 let [dst_reg, lhs_reg, rhs_reg] =
                     self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::Add(ty, dst_reg, lhs_reg, rhs_reg));
             }
             Multiply(mode, ty) => {
-                let ty = ty.to_vm();
                 let [dst_reg, lhs_reg, rhs_reg] =
                     self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::Mul(ty, mode, dst_reg, lhs_reg, rhs_reg));
             }
-            MultiplyAdd(_, _) => todo!(),
-            Convert { from, to } => todo!(),
+            MultiplyAdd(mode, ty) => {
+                let [dst, a, b, c] = self.reg_dst_3src(ty, &instr.operands)?;
+                self.instructions.push(vm::Instruction::Mul(ty, mode, dst, a, b));
+                self.instructions.push(vm::Instruction::Add(ty, dst, dst, c));
+            }
+            Convert { from, to } => {
+                let [dst, src] = self.reg_dst_1src(from, &instr.operands)?;
+                self.instructions.push(vm::Instruction::Convert {
+                    dst_type: to,
+                    src_type: from,
+                    dst,
+                    src,
+                });
+            },
             ConvertAddress(ty, st) => todo!(),
             ConvertAddressTo(ty, st) => {
                 // for now, just move the address register into the destination register
                 let [dst, src] = instr.operands.as_slice() else {
                     todo!();
                 };
-                let ty = ty.to_vm();
                 let dst_reg = self.get_dst_reg(ty, dst)?;
                 let src_reg = self.get_src_reg(ty, src)?;
                 self.instructions
                     .push(vm::Instruction::Move(ty, dst_reg, src_reg));
+            }
+            SetPredicate(pred, ty) => {
+                let (dst, a, b) = self.reg_pred_2src(ty, instr.operands.as_slice())?;
+                self.instructions
+                    .push(vm::Instruction::SetPredicate(ty, pred, dst, a, b));
             },
-            SetPredicate(_, _) => todo!(),
-            ShiftLeft(_) => todo!(),
+            ShiftLeft(ty) => {
+                let [dst_reg, lhs_reg, rhs_reg] =
+                    self.reg_dst_2src(ty, instr.operands.as_slice())?;
+                self.instructions
+                    .push(vm::Instruction::ShiftLeft(ty, dst_reg, lhs_reg, rhs_reg));
+            },
             Call {
                 uniform,
                 ident,
@@ -387,7 +480,16 @@ impl<'a> FuncCodegenState<'a> {
                 params,
             } => todo!(),
             BarrierSync => todo!(),
-            Branch => todo!(),
+            Branch => {
+                let [Operand::Variable(ident)] = instr.operands.as_slice() else {
+                    todo!()
+                };
+                let jump_idx = self.jump_map.len();
+                self.jump_map.push(ident.clone());
+                self.instructions.push(vm::Instruction::Jump {
+                    offset: jump_idx as isize,
+                });
+            }
             Return => self.instructions.push(vm::Instruction::Return),
         };
         Ok(())
@@ -429,16 +531,31 @@ impl<'a> FuncCodegenState<'a> {
         Ok(())
     }
 
-    pub fn finalize(self) -> (String, vm::FuncFrameDesc, Vec<vm::Instruction>) {
+    pub fn finalize(
+        mut self,
+    ) -> Result<(String, vm::FuncFrameDesc, Vec<vm::Instruction>), CompilationError> {
+        // resolve jump targets
+        for (idx, instr) in self.instructions.iter_mut().enumerate() {
+            if let vm::Instruction::Jump { offset } = instr {
+                let jump_map_idx = *offset as usize;
+                let target_label = &self.jump_map[jump_map_idx];
+                if let Some(target_label) = self.label_map.get(target_label) {
+                    *offset = *target_label as isize - idx as isize;
+                } else {
+                    return Err(CompilationError::UndefinedLabel(target_label.clone()));
+                }
+            }
+        }
+
         // align stack size to 16 bytes
-        let aligned_stack = (self.stack_size + 15) & !15;
+        self.stack_size = (self.stack_size + 15) & !15;
         let frame_desc = vm::FuncFrameDesc {
             iptr: vm::IPtr(self.instructions.len()),
-            frame_size: aligned_stack,
+            frame_size: self.stack_size,
             arg_size: self.param_stack_offset,
             regs: self.regs,
         };
-        (self.ident, frame_desc, self.instructions)
+        Ok((self.ident, frame_desc, self.instructions))
     }
 }
 

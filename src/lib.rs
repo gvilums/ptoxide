@@ -10,14 +10,14 @@ mod test {
     use super::*;
 
     #[test]
-    fn parse_compile_simple() {
+    fn compile_add_simple() {
         let contents = std::fs::read_to_string("kernels/add_simple.ptx").unwrap();
         let module = ast::parse_program(&contents).unwrap();
         let _ = compiler::compile(module).unwrap();
     }
 
     #[test]
-    fn run_simple() {
+    fn run_add_simple() {
         let contents = std::fs::read_to_string("kernels/add_simple.ptx").unwrap();
         let mut ctx = Context::new_with_module(&contents).unwrap();
 
@@ -44,5 +44,12 @@ mod test {
         ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
 
         res.iter().for_each(|v| assert_eq!(*v, 3f32));
+    }
+
+    #[test]
+    fn compile_add() {
+        let contents = std::fs::read_to_string("kernels/add.ptx").unwrap();
+        let module = ast::parse_program(&contents).unwrap();
+        let _ = compiler::compile(module).unwrap();
     }
 }

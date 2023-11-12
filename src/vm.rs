@@ -51,15 +51,7 @@ pub struct Reg128 {
 }
 
 use crate::ast::Type;
-
-#[derive(Clone, Copy, Debug)]
-pub enum PredicateOp {
-    LessThan,
-    LessThanEqual,
-    Equal,
-    NotEqual,
-}
-
+use crate::ast::PredicateOp;
 
 #[derive(Clone, Copy, Debug)]
 pub enum RegOperand {
@@ -127,14 +119,11 @@ pub enum Instruction {
     ),
     Mul(Type, MulMode, RegOperand, RegOperand, RegOperand),
     ShiftLeft(Type, RegOperand, RegOperand, RegOperand),
-    SetPredicate(Type, PredicateOp, RegOperand, RegOperand, RegOperand),
+    SetPredicate(Type, PredicateOp, RegPred, RegOperand, RegOperand),
     Jump {
         offset: isize,
     },
-    JumpIf {
-        cond: RegPred,
-        offset: isize,
-    },
+    SkipIf(RegPred, bool),
     Return,
 }
 
@@ -677,9 +666,6 @@ impl Context {
                     }
                 }
                 Instruction::SetPredicate(ty, op, dst, a, b) => {
-                    let RegOperand::Pred(dst) = dst else {
-                        return Err(VmError::InvalidOperand(inst, dst));
-                    };
                     match (ty, a, b) {
                         (Type::U64, RegOperand::B64(a), RegOperand::B64(b)) => {
                             let a = u64::from_ne_bytes(state.get_b64(a));
@@ -689,6 +675,8 @@ impl Context {
                                 PredicateOp::LessThanEqual => a <= b,
                                 PredicateOp::Equal => a == b,
                                 PredicateOp::NotEqual => a != b,
+                                PredicateOp::GreaterThan => a > b,
+                                PredicateOp::GreaterThanEqual => a >= b,
                             };
                             state.set_pred(dst, value);
                         }
@@ -698,9 +686,9 @@ impl Context {
                 Instruction::Jump { offset } => {
                     state.iptr.0 = (state.iptr.0 as isize + offset) as usize;
                 }
-                Instruction::JumpIf { cond, offset } => {
-                    if state.get_pred(cond) {
-                        state.iptr.0 = (state.iptr.0 as isize + offset) as usize;
+                Instruction::SkipIf(cond, expected) => {
+                    if state.get_pred(cond) == expected {
+                        state.iptr.0 += 1;
                     }
                 }
                 Instruction::Return => state.frame_teardown(),

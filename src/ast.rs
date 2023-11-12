@@ -537,10 +537,14 @@ pub enum Statement {
     Grouping(Vec<Statement>),
 }
 
-#[derive(Debug)]
-pub enum Predicate {
+#[derive(Debug, Clone, Copy)]
+pub enum PredicateOp {
     LessThan,
+    LessThanEqual,
     GreaterThan,
+    GreaterThanEqual,
+    Equal,
+    NotEqual,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -564,7 +568,7 @@ pub enum InstructionSpecifier {
     },
     ConvertAddress(Type, StateSpace),
     ConvertAddressTo(Type, StateSpace),
-    SetPredicate(Predicate, Type),
+    SetPredicate(PredicateOp, Type),
     ShiftLeft(Type),
     Call {
         uniform: bool,
@@ -793,9 +797,9 @@ fn parse_guard(mut scanner: Scanner) -> ParseResult<Guard> {
     Ok((guard, scanner))
 }
 
-fn parse_predicate(mut scanner: Scanner) -> ParseResult<Predicate> {
+fn parse_predicate(mut scanner: Scanner) -> ParseResult<PredicateOp> {
     let pred = match scanner.must_pop()? {
-        Token::Ge => Predicate::GreaterThan,
+        Token::Ge => PredicateOp::GreaterThan,
         t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
     Ok((pred, scanner))
