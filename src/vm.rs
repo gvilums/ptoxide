@@ -110,6 +110,14 @@ pub enum Instruction {
     Mul(Type, MulMode, RegOperand, RegOperand, RegOperand),
     ShiftLeft(Type, RegOperand, RegOperand, RegOperand),
     SetPredicate(Type, PredicateOp, RegPred, RegOperand, RegOperand),
+    BarrierSync {
+        idx: RegOperand,
+        cnt: Option<RegOperand>,
+    },
+    BarrierArrive {
+        idx: RegOperand,
+        cnt: Option<RegOperand>,
+    },
     Jump {
         offset: isize,
     },
@@ -126,12 +134,12 @@ struct FrameMeta {
     frame_size: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ThreadState {
     iptr: IPtr,
     regs: Vec<Registers>,
     stack_data: Vec<u8>,
-    frame_meta: Vec<FrameMeta>,
+    stack_frames: Vec<FrameMeta>,
     nctaid: (u32, u32, u32),
     ctaid: (u32, u32, u32),
     ntid: (u32, u32, u32),
@@ -199,7 +207,7 @@ pub struct Context {
     symbol_map: HashMap<String, Symbol>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Registers {
     pred: Vec<bool>,
     b8: Vec<[u8; 1]>,
@@ -261,7 +269,7 @@ impl ThreadState {
             iptr: IPtr(0),
             regs: Vec::new(),
             stack_data: Vec::new(),
-            frame_meta: Vec::new(),
+            stack_frames: Vec::new(),
             nctaid,
             ctaid,
             ntid,
@@ -312,7 +320,7 @@ impl ThreadState {
     }
 
     fn frame_teardown(&mut self) {
-        let frame_meta = self.frame_meta.pop().unwrap();
+        let frame_meta = self.stack_frames.pop().unwrap();
         self.stack_data
             .truncate(self.stack_data.len() - frame_meta.frame_size);
         self.regs.pop();
@@ -320,7 +328,7 @@ impl ThreadState {
     }
 
     fn frame_setup(&mut self, desc: FuncFrameDesc) {
-        self.frame_meta.push(FrameMeta {
+        self.stack_frames.push(FrameMeta {
             return_addr: self.iptr,
             frame_size: desc.frame_size,
         });
@@ -328,10 +336,6 @@ impl ThreadState {
             .resize(self.stack_data.len() + desc.frame_size, 0);
         self.regs.push(Registers::new(desc.regs));
         self.iptr = desc.iptr;
-    }
-
-    fn num_frames(&self) -> usize {
-        self.frame_meta.len()
     }
 
     fn resolve_address(&self, addr: AddrOperand) -> usize {
@@ -342,11 +346,11 @@ impl ThreadState {
                 (addr as isize + offset) as usize
             }
             AddrOperand::StackRelative(offset) => {
-                let frame_size = self.frame_meta.last().unwrap().frame_size as isize;
+                let frame_size = self.stack_frames.last().unwrap().frame_size as isize;
                 (self.stack_data.len() as isize - frame_size + offset) as usize
             }
             AddrOperand::StackRelativeReg(offset, reg) => {
-                let frame_size = self.frame_meta.last().unwrap().frame_size as isize;
+                let frame_size = self.stack_frames.last().unwrap().frame_size as isize;
                 let reg_offset = u64::from_ne_bytes(self.get_b64(reg)) as isize;
                 (self.stack_data.len() as isize - frame_size + offset + reg_offset) as usize
             }
@@ -389,6 +393,13 @@ pub struct LaunchParams {
     block_dim: (u32, u32, u32),
 }
 
+enum ThreadResult {
+    Continue,
+    Sync(usize, Option<usize>),
+    Arrive(usize, Option<usize>),
+    Exit,
+}
+
 impl LaunchParams {
     pub fn new() -> LaunchParams {
         LaunchParams {
@@ -411,6 +422,54 @@ impl LaunchParams {
     pub fn block1d(mut self, x: u32) -> LaunchParams {
         self.block_dim = (x, 1, 1);
         self
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Barrier {
+    target: usize,
+    arrived: usize,
+    blocked: Vec<ThreadState>,
+}
+
+struct Barriers {
+    barriers: Vec<Option<Barrier>>
+}
+
+impl Barriers {
+    pub fn new() -> Self {
+        Barriers {
+            barriers: Vec::new()
+        }
+    }
+
+    pub fn arrive(&mut self, idx: usize, target: usize) -> Result<Vec<ThreadState>, VmError> {
+        todo!()
+    }
+
+    pub fn block(&mut self, idx: usize, target: usize, thread: ThreadState) -> Result<Vec<ThreadState>, VmError> {
+        self.assert_size(idx);
+        if let Some(ref mut barr) = self.barriers[idx] {
+            barr.blocked.push(thread);
+            barr.arrived += 1;
+            if barr.arrived == barr.target {
+                let barr = self.barriers[idx].take().unwrap();
+                return Ok(barr.blocked);
+            } 
+        } else {
+            self.barriers[idx] = Some(Barrier {
+                target,
+                arrived: 1,
+                blocked: vec![thread],
+            });
+        }
+        Ok(Vec::new())
+    }
+
+    fn assert_size(&mut self, idx: usize) {
+        if idx >= self.barriers.len() {
+            self.barriers.resize(idx + 1, None);
+        }
     }
 }
 
@@ -497,223 +556,263 @@ impl Context {
         init_stack: &[u8],
     ) -> Result<(), VmError> {
         let mut shared_mem = vec![0u8; desc.shared_size];
+
+        let mut runnable = Vec::new();
         for x in 0..ntid.0 {
             for y in 0..ntid.1 {
                 for z in 0..ntid.2 {
-                    let mut state = ThreadState::new(
-                        nctaid,
-                        ctaid,
-                        ntid,
-                        (x, y, z),
-                    );
+                    let mut state = ThreadState::new(nctaid, ctaid, ntid, (x, y, z));
                     state.stack_data.extend_from_slice(&init_stack);
                     state.frame_setup(desc);
+                    runnable.push(state);
+                }
+            }
+        }
+        let cta_size = (ntid.0 * ntid.1 * ntid.2) as usize;
 
-                    self.run_thread(
-                        &mut shared_mem,
-                        &mut state,
-                    )?;
+        let mut barriers = Barriers::new();
+
+        while let Some(mut state) = runnable.pop() {
+            loop {
+                match self.step_thread(&mut state, &mut shared_mem)? {
+                    ThreadResult::Continue => continue, 
+                    ThreadResult::Arrive(idx, cnt) => {
+                        let cnt = cnt.unwrap_or(cta_size);
+                        runnable.extend(barriers.arrive(idx, cnt)?);
+                        continue
+                    },
+                    ThreadResult::Sync(idx, cnt) => {
+                        let cnt = cnt.unwrap_or(cta_size);
+                        runnable.extend(barriers.block(idx, cnt, state)?);
+                        break
+                    },
+                    ThreadResult::Exit => break
                 }
             }
         }
         Ok(())
     }
 
-    fn run_thread(
+    fn step_thread(
         &mut self,
+        thread: &mut ThreadState,
         shared_mem: &mut [u8],
-        state: &mut ThreadState,
-    ) -> Result<(), VmError> {
-        while state.num_frames() > 0 {
-            let inst = self.fetch_instr(state.iptr_fetch_incr());
-            match inst {
-                Instruction::Load(space, dst, addr) => {
-                    let addr = state.resolve_address(addr);
-                    let data = match space {
-                        StateSpace::Global => self.global_mem.as_slice(),
-                        StateSpace::Stack => state.stack_data.as_slice(),
-                        StateSpace::Shared => todo!(),
-                    };
-                    match dst {
-                        RegOperand::B8(r) => state.set_b8(r, data[addr..addr + 1].try_into()?),
-                        RegOperand::B16(r) => state.set_b16(r, data[addr..addr + 2].try_into()?),
-                        RegOperand::B32(r) => state.set_b32(r, data[addr..addr + 4].try_into()?),
-                        RegOperand::B64(r) => state.set_b64(r, data[addr..addr + 8].try_into()?),
-                        RegOperand::B128(r) => state.set_b128(r, data[addr..addr + 16].try_into()?),
-                        o => return Err(VmError::InvalidOperand(inst, o)),
-                    }
+    ) -> Result<ThreadResult, VmError> {
+        let inst = self.fetch_instr(thread.iptr_fetch_incr());
+        match inst {
+            Instruction::Load(space, dst, addr) => {
+                let addr = thread.resolve_address(addr);
+                let data = match space {
+                    StateSpace::Global => self.global_mem.as_slice(),
+                    StateSpace::Stack => thread.stack_data.as_slice(),
+                    StateSpace::Shared => shared_mem,
+                };
+                match dst {
+                    RegOperand::B8(r) => thread.set_b8(r, data[addr..addr + 1].try_into()?),
+                    RegOperand::B16(r) => thread.set_b16(r, data[addr..addr + 2].try_into()?),
+                    RegOperand::B32(r) => thread.set_b32(r, data[addr..addr + 4].try_into()?),
+                    RegOperand::B64(r) => thread.set_b64(r, data[addr..addr + 8].try_into()?),
+                    RegOperand::B128(r) => thread.set_b128(r, data[addr..addr + 16].try_into()?),
+                    o => return Err(VmError::InvalidOperand(inst, o)),
                 }
-                Instruction::Store(space, src, addr) => {
-                    let addr = state.resolve_address(addr);
-                    match src {
-                        RegOperand::B8(r) => {
-                            let val = state.get_b8(r);
-                            self.get_data_ptr(space, state)[addr..addr + 1]
-                                .copy_from_slice(&val);
-                        }
-                        RegOperand::B16(r) => {
-                            let val = state.get_b16(r);
-                            self.get_data_ptr(space, state)[addr..addr + 2]
-                                .copy_from_slice(&val);
-                        }
-                        RegOperand::B32(r) => {
-                            let val = state.get_b32(r);
-                            self.get_data_ptr(space, state)[addr..addr + 4]
-                                .copy_from_slice(&val);
-                        }
-                        RegOperand::B64(r) => {
-                            let val = state.get_b64(r);
-                            self.get_data_ptr(space, state)[addr..addr + 8]
-                                .copy_from_slice(&val);
-                        }
-                        RegOperand::B128(r) => {
-                            let val = state.get_b128(r);
-                            self.get_data_ptr(space, state)[addr..addr + 16]
-                                .copy_from_slice(&val);
-                        }
-                        o => return Err(VmError::InvalidOperand(inst, o)),
+            }
+            Instruction::Store(space, src, addr) => {
+                let addr = thread.resolve_address(addr);
+                match src {
+                    RegOperand::B8(r) => {
+                        let val = thread.get_b8(r);
+                        self.get_data_ptr(space, thread)[addr..addr + 1].copy_from_slice(&val);
                     }
-                }
-                Instruction::Add(ty, dst, a, b) => {
-                    use RegOperand::*;
-                    match (dst, a, b) {
-                        (B64(dst), B64(a), B64(b)) => match ty {
-                            Type::U64 | Type::B64 => {
-                                state.set_u64(dst, state.get_u64(a) + state.get_u64(b));
-                            }
-                            Type::S64 => {
-                                state.set_i64(dst, state.get_i64(a) + state.get_i64(b));
-                            }
-                            _ => todo!(),
-                        },
-                        (B32(dst), B32(a), B32(b)) => match ty {
-                            Type::U32 | Type::B32 => {
-                                state.set_u32(dst, state.get_u32(a) + state.get_u32(b));
-                            }
-                            Type::S32 => {
-                                state.set_i32(dst, state.get_i32(a) + state.get_i32(b));
-                            }
-                            Type::F32 => {
-                                state.set_f32(dst, state.get_f32(a) + state.get_f32(b));
-                            }
-                            _ => todo!(),
-                        },
-                        _ => todo!(),
+                    RegOperand::B16(r) => {
+                        let val = thread.get_b16(r);
+                        self.get_data_ptr(space, thread)[addr..addr + 2].copy_from_slice(&val);
                     }
-                }
-                Instruction::Mul(ty, mode, dst, a, b) => {
-                    use RegOperand::*;
-                    match (mode, dst, a, b) {
-                        (MulMode::Low, B64(dst), B64(a), B64(b)) => match ty {
-                            Type::U64 | Type::B64 => {
-                                state.set_u64(dst, state.get_u64(a) * state.get_u64(b));
-                            }
-                            _ => todo!(),
-                        },
-                        (MulMode::Low, B32(dst), B32(a), B32(b)) => match ty {
-                            Type::U32 | Type::B32 => {
-                                state.set_u32(dst, state.get_u32(a) * state.get_u32(b));
-                            }
-                            Type::S32 => {
-                                state.set_i32(dst, state.get_i32(a) * state.get_i32(b));
-                            }
-                            _ => todo!(),
-                        },
-                        (MulMode::Wide, B64(dst), B32(a), B32(b)) => match ty {
-                            Type::U32 => {
-                                state.set_u64(
-                                    dst,
-                                    state.get_u32(a) as u64 * state.get_u32(b) as u64,
-                                );
-                            }
-                            _ => todo!(),
-                        },
-                        _ => todo!(),
+                    RegOperand::B32(r) => {
+                        let val = thread.get_b32(r);
+                        self.get_data_ptr(space, thread)[addr..addr + 4].copy_from_slice(&val);
                     }
-                }
-                Instruction::ShiftLeft(ty, dst, a, b) => {
-                    use RegOperand::*;
-                    match (dst, a, b) {
-                        (B64(dst), B64(a), B64(b)) => match ty {
-                            Type::U64 | Type::B64 => {
-                                state.set_u64(dst, state.get_u64(a) << state.get_u64(b));
-                            }
-                            _ => todo!(),
-                        },
-                        _ => todo!(),
+                    RegOperand::B64(r) => {
+                        let val = thread.get_b64(r);
+                        self.get_data_ptr(space, thread)[addr..addr + 8].copy_from_slice(&val);
                     }
+                    RegOperand::B128(r) => {
+                        let val = thread.get_b128(r);
+                        self.get_data_ptr(space, thread)[addr..addr + 16].copy_from_slice(&val);
+                    }
+                    o => return Err(VmError::InvalidOperand(inst, o)),
                 }
-                Instruction::Convert {
-                    dst_type,
-                    src_type,
-                    dst,
-                    src,
-                } => {
-                    use RegOperand::*;
-                    match (dst_type, src_type, dst, src) {
-                        (Type::U64, Type::U32, B64(dst), B32(src)) => {
-                            state.set_u64(dst, state.get_u32(src) as u64);
+            }
+            Instruction::Add(ty, dst, a, b) => {
+                use RegOperand::*;
+                match (dst, a, b) {
+                    (B64(dst), B64(a), B64(b)) => match ty {
+                        Type::U64 | Type::B64 => {
+                            thread.set_u64(dst, thread.get_u64(a) + thread.get_u64(b));
+                        }
+                        Type::S64 => {
+                            thread.set_i64(dst, thread.get_i64(a) + thread.get_i64(b));
                         }
                         _ => todo!(),
-                    }
-                }
-                Instruction::Move(_, dst, src) => {
-                    use RegOperand::*;
-                    match (dst, src) {
-                        (B64(dst), B64(src)) => {
-                            state.set_b64(dst, state.get_b64(src));
+                    },
+                    (B32(dst), B32(a), B32(b)) => match ty {
+                        Type::U32 | Type::B32 => {
+                            thread.set_u32(dst, thread.get_u32(a) + thread.get_u32(b));
                         }
-                        (B32(dst), Special(SpecialReg::ThreadIdX)) => {
-                            state.set_u32(dst, state.tid.0);
+                        Type::S32 => {
+                            thread.set_i32(dst, thread.get_i32(a) + thread.get_i32(b));
                         }
-                        (B32(dst), Special(SpecialReg::NumThreadX)) => {
-                            state.set_u32(dst, state.ntid.0);
-                        }
-                        (B32(dst), Special(SpecialReg::CtaIdX)) => {
-                            state.set_u32(dst, state.ctaid.0);
-                        }
-                        (B32(dst), Special(SpecialReg::NumCtaX)) => {
-                            state.set_u32(dst, state.nctaid.0);
+                        Type::F32 => {
+                            thread.set_f32(dst, thread.get_f32(a) + thread.get_f32(b));
                         }
                         _ => todo!(),
-                    }
+                    },
+                    _ => todo!(),
                 }
-                Instruction::Const(dst, value) => {
-                    use RegOperand::*;
-                    match (dst, value) {
-                        (B64(dst), Constant::U64(value)) => state.set_u64(dst, value),
-                        (B32(dst), Constant::U32(value)) => state.set_u32(dst, value),
+            }
+            Instruction::Mul(ty, mode, dst, a, b) => {
+                use RegOperand::*;
+                match (mode, dst, a, b) {
+                    (MulMode::Low, B64(dst), B64(a), B64(b)) => match ty {
+                        Type::U64 | Type::B64 => {
+                            thread.set_u64(dst, thread.get_u64(a) * thread.get_u64(b));
+                        }
                         _ => todo!(),
-                    }
+                    },
+                    (MulMode::Low, B32(dst), B32(a), B32(b)) => match ty {
+                        Type::U32 | Type::B32 => {
+                            thread.set_u32(dst, thread.get_u32(a) * thread.get_u32(b));
+                        }
+                        Type::S32 => {
+                            thread.set_i32(dst, thread.get_i32(a) * thread.get_i32(b));
+                        }
+                        _ => todo!(),
+                    },
+                    (MulMode::Wide, B64(dst), B32(a), B32(b)) => match ty {
+                        Type::U32 => {
+                            thread
+                                .set_u64(dst, thread.get_u32(a) as u64 * thread.get_u32(b) as u64);
+                        }
+                        _ => todo!(),
+                    },
+                    _ => todo!(),
                 }
-                Instruction::SetPredicate(ty, op, dst, a, b) => match (ty, a, b) {
-                    (Type::U64, RegOperand::B64(a), RegOperand::B64(b)) => {
-                        let a = u64::from_ne_bytes(state.get_b64(a));
-                        let b = u64::from_ne_bytes(state.get_b64(b));
-                        let value = match op {
-                            PredicateOp::LessThan => a < b,
-                            PredicateOp::LessThanEqual => a <= b,
-                            PredicateOp::Equal => a == b,
-                            PredicateOp::NotEqual => a != b,
-                            PredicateOp::GreaterThan => a > b,
-                            PredicateOp::GreaterThanEqual => a >= b,
-                        };
-                        state.set_pred(dst, value);
+            }
+            Instruction::ShiftLeft(ty, dst, a, b) => {
+                use RegOperand::*;
+                match (dst, a, b) {
+                    (B64(dst), B64(a), B64(b)) => match ty {
+                        Type::U64 | Type::B64 => {
+                            thread.set_u64(dst, thread.get_u64(a) << thread.get_u64(b));
+                        }
+                        _ => todo!(),
+                    },
+                    _ => todo!(),
+                }
+            }
+            Instruction::Convert {
+                dst_type,
+                src_type,
+                dst,
+                src,
+            } => {
+                use RegOperand::*;
+                match (dst_type, src_type, dst, src) {
+                    (Type::U64, Type::U32, B64(dst), B32(src)) => {
+                        thread.set_u64(dst, thread.get_u32(src) as u64);
                     }
                     _ => todo!(),
-                },
-                Instruction::Jump { offset } => {
-                    state.iptr.0 = (state.iptr.0 as isize + offset - 1) as usize;
                 }
-                Instruction::SkipIf(cond, expected) => {
-                    if state.get_pred(cond) == expected {
-                        state.iptr.0 += 1;
-                    }
-                }
-                Instruction::Return => state.frame_teardown(),
             }
+            Instruction::Move(_, dst, src) => {
+                use RegOperand::*;
+                match (dst, src) {
+                    (B64(dst), B64(src)) => {
+                        thread.set_b64(dst, thread.get_b64(src));
+                    }
+                    (B32(dst), Special(SpecialReg::ThreadIdX)) => {
+                        thread.set_u32(dst, thread.tid.0);
+                    }
+                    (B32(dst), Special(SpecialReg::NumThreadX)) => {
+                        thread.set_u32(dst, thread.ntid.0);
+                    }
+                    (B32(dst), Special(SpecialReg::CtaIdX)) => {
+                        thread.set_u32(dst, thread.ctaid.0);
+                    }
+                    (B32(dst), Special(SpecialReg::NumCtaX)) => {
+                        thread.set_u32(dst, thread.nctaid.0);
+                    }
+                    _ => todo!(),
+                }
+            }
+            Instruction::Const(dst, value) => {
+                use RegOperand::*;
+                match (dst, value) {
+                    (B64(dst), Constant::U64(value)) => thread.set_u64(dst, value),
+                    (B32(dst), Constant::U32(value)) => thread.set_u32(dst, value),
+                    _ => todo!(),
+                }
+            }
+            Instruction::SetPredicate(ty, op, dst, a, b) => match (ty, a, b) {
+                (Type::U64, RegOperand::B64(a), RegOperand::B64(b)) => {
+                    let a = u64::from_ne_bytes(thread.get_b64(a));
+                    let b = u64::from_ne_bytes(thread.get_b64(b));
+                    let value = match op {
+                        PredicateOp::LessThan => a < b,
+                        PredicateOp::LessThanEqual => a <= b,
+                        PredicateOp::Equal => a == b,
+                        PredicateOp::NotEqual => a != b,
+                        PredicateOp::GreaterThan => a > b,
+                        PredicateOp::GreaterThanEqual => a >= b,
+                    };
+                    thread.set_pred(dst, value);
+                }
+                _ => todo!(),
+            },
+            Instruction::BarrierSync { idx, cnt } => {
+                let RegOperand::B32(idx) = idx else {
+                    return Err(VmError::InvalidOperand(inst, idx));
+                };
+                let idx = thread.get_u32(idx) as usize;
+                let cnt = if let Some(cnt) = cnt {
+                    let RegOperand::B32(cnt) = cnt else {
+                        return Err(VmError::InvalidOperand(inst, cnt));
+                    };
+                    Some(thread.get_u32(cnt) as usize)
+                } else {
+                    None
+                };
+                return Ok(ThreadResult::Sync(idx, cnt));
+            }
+            Instruction::BarrierArrive { idx, cnt } => {
+                let RegOperand::B32(idx) = idx else {
+                    return Err(VmError::InvalidOperand(inst, idx));
+                };
+                let idx = thread.get_u32(idx) as usize;
+                let cnt = if let Some(cnt) = cnt {
+                    let RegOperand::B32(cnt) = cnt else {
+                        return Err(VmError::InvalidOperand(inst, cnt));
+                    };
+                    Some(thread.get_u32(cnt) as usize)
+                } else {
+                    None
+                };
+                return Ok(ThreadResult::Arrive(idx, cnt));
+            }
+            Instruction::Jump { offset } => {
+                thread.iptr.0 = (thread.iptr.0 as isize + offset - 1) as usize;
+            }
+            Instruction::SkipIf(cond, expected) => {
+                if thread.get_pred(cond) == expected {
+                    thread.iptr.0 += 1;
+                }
+            }
+            Instruction::Return => thread.frame_teardown(),
         }
-        Ok(())
+        if thread.stack_frames.is_empty() {
+            Ok(ThreadResult::Exit)
+        } else {
+            Ok(ThreadResult::Continue)
+        }
     }
 
     pub fn run(&mut self, params: LaunchParams, args: &[Argument]) -> Result<(), VmError> {
