@@ -317,8 +317,8 @@ impl<'a> FuncCodegenState<'a> {
 
         if let Some(guard) = instr.guard {
             let (ident, expected) = match guard {
-                ast::Guard::Normal(s) => (s, true),
-                ast::Guard::Negated(s) => (s, false),
+                ast::Guard::Normal(s) => (s, false),
+                ast::Guard::Negated(s) => (s, true),
             };
             let guard_reg = self.var_map.get_pred(&ident)?;
             self.instructions

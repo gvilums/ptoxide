@@ -356,9 +356,11 @@ pub enum VmError {
 #[derive(Clone, Copy, Debug)]
 pub struct DevicePointer(u64);
 
-pub enum Argument {
+pub enum Argument<'a> {
     Ptr(DevicePointer),
-    Value(Vec<u8>),
+    U64(u64),
+    U32(u32),
+    Bytes(&'a [u8]),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -552,7 +554,7 @@ impl Context {
                     use RegOperand::*;
                     match (dst, a, b) {
                         (B64(dst), B64(a), B64(b)) => match ty {
-                            Type::U64 => {
+                            Type::U64 | Type::B64 => {
                                 let a = u64::from_ne_bytes(state.get_b64(a));
                                 let b = u64::from_ne_bytes(state.get_b64(b));
                                 state.set_b64(dst, (a + b).to_ne_bytes());
@@ -565,6 +567,16 @@ impl Context {
                             _ => todo!(),
                         },
                         (B32(dst), B32(a), B32(b)) => match ty {
+                            Type::U32 | Type::B32 => {
+                                let a = u32::from_ne_bytes(state.get_b32(a));
+                                let b = u32::from_ne_bytes(state.get_b32(b));
+                                state.set_b32(dst, (a + b).to_ne_bytes());
+                            }
+                            Type::S32 => {
+                                let a = i32::from_ne_bytes(state.get_b32(a));
+                                let b = i32::from_ne_bytes(state.get_b32(b));
+                                state.set_b32(dst, (a + b).to_ne_bytes());
+                            }
                             Type::F32 => {
                                 let a = f32::from_ne_bytes(state.get_b32(a));
                                 let b = f32::from_ne_bytes(state.get_b32(b));
@@ -579,7 +591,7 @@ impl Context {
                     use RegOperand::*;
                     match (mode, dst, a, b) {
                         (MulMode::Low, B64(dst), B64(a), B64(b)) => match ty {
-                            Type::U64 => {
+                            Type::U64 | Type::B64 => {
                                 let a = u64::from_ne_bytes(state.get_b64(a));
                                 let b = u64::from_ne_bytes(state.get_b64(b));
                                 state.set_b64(dst, (a * b).to_ne_bytes());
@@ -587,9 +599,14 @@ impl Context {
                             _ => todo!(),
                         },
                         (MulMode::Low, B32(dst), B32(a), B32(b)) => match ty {
-                            Type::U32 => {
+                            Type::U32 | Type::B32 => {
                                 let a = u32::from_ne_bytes(state.get_b32(a));
                                 let b = u32::from_ne_bytes(state.get_b32(b));
+                                state.set_b32(dst, (a * b).to_ne_bytes());
+                            }
+                            Type::S32 => {
+                                let a = i32::from_ne_bytes(state.get_b32(a));
+                                let b = i32::from_ne_bytes(state.get_b32(b));
                                 state.set_b32(dst, (a * b).to_ne_bytes());
                             }
                             _ => todo!(),
@@ -609,7 +626,7 @@ impl Context {
                     use RegOperand::*;
                     match (dst, a, b) {
                         (B64(dst), B64(a), B64(b)) => match ty {
-                            Type::U64 => {
+                            Type::U64 | Type::B64 => {
                                 let a = u64::from_ne_bytes(state.get_b64(a));
                                 let b = u64::from_ne_bytes(state.get_b64(b));
                                 state.set_b64(dst, (a << b).to_ne_bytes());
@@ -684,7 +701,7 @@ impl Context {
                     }
                 }
                 Instruction::Jump { offset } => {
-                    state.iptr.0 = (state.iptr.0 as isize + offset) as usize;
+                    state.iptr.0 = (state.iptr.0 as isize + offset - 1) as usize;
                 }
                 Instruction::SkipIf(cond, expected) => {
                     if state.get_pred(cond) == expected {
@@ -705,8 +722,9 @@ impl Context {
         let arg_size: usize = args
             .iter()
             .map(|arg| match arg {
-                Argument::Ptr(_) => std::mem::size_of::<u64>(),
-                Argument::Value(v) => v.len(),
+                Argument::Ptr(_) | Argument::U64(_) => std::mem::size_of::<u64>(),
+                Argument::U32(_) => std::mem::size_of::<u32>(),
+                Argument::Bytes(v) => v.len(),
             })
             .sum();
         if arg_size != desc.arg_size {
@@ -720,14 +738,22 @@ impl Context {
                     let ptr_bytes = ptr.0.to_ne_bytes();
                     init_stack.extend_from_slice(&ptr_bytes);
                 }
-                Argument::Value(v) => {
+                Argument::U64(v) => {
+                    let v_bytes = v.to_ne_bytes();
+                    init_stack.extend_from_slice(&v_bytes);
+                }
+                Argument::U32(v) => {
+                    let v_bytes = v.to_ne_bytes();
+                    init_stack.extend_from_slice(&v_bytes);
+                }
+                Argument::Bytes(v) => {
                     init_stack.extend_from_slice(v);
                 }
             }
         }
-        for x in 0..params.block_dim.0 {
-            for y in 0..params.block_dim.1 {
-                for z in 0..params.block_dim.2 {
+        for x in 0..params.grid_dim.0 {
+            for y in 0..params.grid_dim.1 {
+                for z in 0..params.grid_dim.2 {
                     self.run_cta(
                         params.grid_dim,
                         (x, y, z),
