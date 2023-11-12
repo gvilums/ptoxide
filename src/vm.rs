@@ -132,6 +132,10 @@ struct ThreadState {
     regs: Vec<Registers>,
     stack_data: Vec<u8>,
     frame_meta: Vec<FrameMeta>,
+    nctaid: (u32, u32, u32),
+    ctaid: (u32, u32, u32),
+    ntid: (u32, u32, u32),
+    tid: (u32, u32, u32),
     // function_args: Vec<isize>,
 }
 
@@ -184,6 +188,7 @@ pub struct FuncFrameDesc {
     pub frame_size: usize,
     pub arg_size: usize,
     pub regs: RegDesc,
+    pub shared_size: usize,
 }
 
 #[derive(Debug)]
@@ -246,13 +251,21 @@ macro_rules! generate_reg_functions2 {
 }
 
 impl ThreadState {
-    fn new() -> ThreadState {
+    fn new(
+        nctaid: (u32, u32, u32),
+        ctaid: (u32, u32, u32),
+        ntid: (u32, u32, u32),
+        tid: (u32, u32, u32),
+    ) -> ThreadState {
         ThreadState {
             iptr: IPtr(0),
             regs: Vec::new(),
             stack_data: Vec::new(),
             frame_meta: Vec::new(),
-            // function_args: Vec::new(),
+            nctaid,
+            ctaid,
+            ntid,
+            tid,
         }
     }
 
@@ -483,10 +496,23 @@ impl Context {
         desc: FuncFrameDesc,
         init_stack: &[u8],
     ) -> Result<(), VmError> {
+        let mut shared_mem = vec![0u8; desc.shared_size];
         for x in 0..ntid.0 {
             for y in 0..ntid.1 {
                 for z in 0..ntid.2 {
-                    self.run_thread(nctaid, ctaid, ntid, (x, y, z), desc, init_stack)?;
+                    let mut state = ThreadState::new(
+                        nctaid,
+                        ctaid,
+                        ntid,
+                        (x, y, z),
+                    );
+                    state.stack_data.extend_from_slice(&init_stack);
+                    state.frame_setup(desc);
+
+                    self.run_thread(
+                        &mut shared_mem,
+                        &mut state,
+                    )?;
                 }
             }
         }
@@ -495,17 +521,9 @@ impl Context {
 
     fn run_thread(
         &mut self,
-        nctaid: (u32, u32, u32),
-        ctaid: (u32, u32, u32),
-        ntid: (u32, u32, u32),
-        tid: (u32, u32, u32),
-        desc: FuncFrameDesc,
-        init_stack: &[u8],
+        shared_mem: &mut [u8],
+        state: &mut ThreadState,
     ) -> Result<(), VmError> {
-        let mut state = ThreadState::new();
-        state.stack_data.extend_from_slice(&init_stack);
-        state.frame_setup(desc);
-
         while state.num_frames() > 0 {
             let inst = self.fetch_instr(state.iptr_fetch_incr());
             match inst {
@@ -530,27 +548,27 @@ impl Context {
                     match src {
                         RegOperand::B8(r) => {
                             let val = state.get_b8(r);
-                            self.get_data_ptr(space, &mut state)[addr..addr + 1]
+                            self.get_data_ptr(space, state)[addr..addr + 1]
                                 .copy_from_slice(&val);
                         }
                         RegOperand::B16(r) => {
                             let val = state.get_b16(r);
-                            self.get_data_ptr(space, &mut state)[addr..addr + 2]
+                            self.get_data_ptr(space, state)[addr..addr + 2]
                                 .copy_from_slice(&val);
                         }
                         RegOperand::B32(r) => {
                             let val = state.get_b32(r);
-                            self.get_data_ptr(space, &mut state)[addr..addr + 4]
+                            self.get_data_ptr(space, state)[addr..addr + 4]
                                 .copy_from_slice(&val);
                         }
                         RegOperand::B64(r) => {
                             let val = state.get_b64(r);
-                            self.get_data_ptr(space, &mut state)[addr..addr + 8]
+                            self.get_data_ptr(space, state)[addr..addr + 8]
                                 .copy_from_slice(&val);
                         }
                         RegOperand::B128(r) => {
                             let val = state.get_b128(r);
-                            self.get_data_ptr(space, &mut state)[addr..addr + 16]
+                            self.get_data_ptr(space, state)[addr..addr + 16]
                                 .copy_from_slice(&val);
                         }
                         o => return Err(VmError::InvalidOperand(inst, o)),
@@ -646,16 +664,16 @@ impl Context {
                             state.set_b64(dst, state.get_b64(src));
                         }
                         (B32(dst), Special(SpecialReg::ThreadIdX)) => {
-                            state.set_u32(dst, tid.0);
+                            state.set_u32(dst, state.tid.0);
                         }
                         (B32(dst), Special(SpecialReg::NumThreadX)) => {
-                            state.set_u32(dst, ntid.0);
+                            state.set_u32(dst, state.ntid.0);
                         }
                         (B32(dst), Special(SpecialReg::CtaIdX)) => {
-                            state.set_u32(dst, ctaid.0);
+                            state.set_u32(dst, state.ctaid.0);
                         }
                         (B32(dst), Special(SpecialReg::NumCtaX)) => {
-                            state.set_u32(dst, nctaid.0);
+                            state.set_u32(dst, state.nctaid.0);
                         }
                         _ => todo!(),
                     }
@@ -801,6 +819,7 @@ mod test {
         let desc = vec![FuncFrameDesc {
             iptr: IPtr(0),
             frame_size: 0,
+            shared_size: 0,
             arg_size: 24,
             regs: RegDesc {
                 b64_count: 6,
@@ -912,6 +931,7 @@ mod test {
         let desc = vec![FuncFrameDesc {
             iptr: IPtr(0),
             frame_size: 0,
+            shared_size: 0,
             arg_size: 24,
             regs: RegDesc {
                 b32_count: 1,
