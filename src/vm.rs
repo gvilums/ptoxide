@@ -1,5 +1,14 @@
+use std::collections::HashMap;
+
 use crate::ast::MulMode;
 use crate::ast::SpecialReg;
+
+
+#[derive(Debug, Clone, Copy)]
+pub enum Symbol {
+    Function(usize),
+    Variable(usize),
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum StateSpace {
@@ -144,7 +153,7 @@ struct ThreadState {
     regs: Vec<Registers>,
     stack_data: Vec<u8>,
     frame_meta: Vec<FrameMeta>,
-    function_args: Vec<isize>,
+    // function_args: Vec<isize>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -201,8 +210,9 @@ pub struct FuncFrameDesc {
 #[derive(Debug)]
 pub struct Context {
     global_mem: Vec<u8>,
-    program: Vec<Instruction>,
+    instructions: Vec<Instruction>,
     descriptors: Vec<FuncFrameDesc>,
+    symbol_map: HashMap<String, Symbol>
 }
 
 #[derive(Debug)]
@@ -235,7 +245,7 @@ impl ThreadState {
             regs: Vec::new(),
             stack_data: Vec::new(),
             frame_meta: Vec::new(),
-            function_args: Vec::new(),
+            // function_args: Vec::new(),
         }
     }
 
@@ -348,6 +358,10 @@ pub enum VmError {
     ParamDataSizeMismatch,
     #[error("Slice size mismatch")]
     SliceSizeMismatch(#[from] std::array::TryFromSliceError),
+    #[error("Parse error: {0:?}")]
+    ParseError(#[from] crate::ast::ParseErr),
+    #[error("Compile error: {0:?}")]
+    CompileError(#[from] crate::compiler::CompilationError)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -392,27 +406,40 @@ impl LaunchParams {
 
 impl Context {
     fn fetch_instr(&self, iptr: IPtr) -> Instruction {
-        self.program[iptr.0]
+        self.instructions[iptr.0]
     }
 
     #[cfg(test)]
     fn new_raw(program: Vec<Instruction>, descriptors: Vec<FuncFrameDesc>) -> Context {
         Context {
             global_mem: Vec::new(),
-            program,
+            instructions: program,
             descriptors,
+            symbol_map: HashMap::new(),
         }
     }
 
     pub fn new() -> Context {
         Context {
             global_mem: Vec::new(),
-            program: Vec::new(),
+            instructions: Vec::new(),
             descriptors: Vec::new(),
+            symbol_map: HashMap::new(),
         }
     }
 
-    pub fn load(module: &str) -> Result<(), crate::ast::ParseErr> {
+    pub fn new_with_module(module: &str) -> Result<Self, VmError> {
+        let module = crate::ast::parse_program(module)?;
+        let compiled = crate::compiler::compile(module)?;
+        Ok(Self {
+            global_mem: Vec::new(),
+            instructions: compiled.instructions,
+            descriptors: compiled.func_descriptors,
+            symbol_map: compiled.symbol_map,
+        })
+    }
+
+    pub fn load(&mut self, module: &str) -> Result<(), crate::ast::ParseErr> {
         let module = crate::ast::parse_program(module)?;
         let _compiled = crate::compiler::compile(module).unwrap();
         todo!()
@@ -548,6 +575,14 @@ impl Context {
                             }
                             _ => todo!(),
                         },
+                        (B32(dst), B32(a), B32(b)) => match ty {
+                            Type::F32 => {
+                                let a = f32::from_ne_bytes(state.get_b32(a));
+                                let b = f32::from_ne_bytes(state.get_b32(b));
+                                state.set_b32(dst, (a + b).to_ne_bytes());
+                            }
+                            _ => todo!(),
+                        },
                         _ => todo!(),
                     }
                 }
@@ -567,6 +602,14 @@ impl Context {
                                 let a = u32::from_ne_bytes(state.get_b32(a));
                                 let b = u32::from_ne_bytes(state.get_b32(b));
                                 state.set_b32(dst, (a * b).to_ne_bytes());
+                            }
+                            _ => todo!(),
+                        },
+                        (MulMode::Wide, B64(dst), B32(a), B32(b)) => match ty {
+                            Type::U32 => {
+                                let a = u32::from_ne_bytes(state.get_b32(a));
+                                let b = u32::from_ne_bytes(state.get_b32(b));
+                                state.set_b64(dst, (a as u64 * b as u64).to_ne_bytes());
                             }
                             _ => todo!(),
                         },
@@ -626,9 +669,10 @@ impl Context {
                 Instruction::Const(dst, value) => {
                     use RegOperand::*;
                     match (dst, value) {
-                        (B64(dst), Constant::U64(value)) => {
-                            state.set_b64(dst, value.to_ne_bytes());
-                        }
+                        (B64(dst), Constant::U64(value)) => 
+                            state.set_b64(dst, value.to_ne_bytes()),
+                        (B32(dst), Constant::U32(value)) => 
+                            state.set_b32(dst, value.to_ne_bytes()),
                         _ => todo!(),
                     }
                 }

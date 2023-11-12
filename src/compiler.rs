@@ -3,18 +3,12 @@ use std::collections::HashMap;
 use crate::ast;
 use crate::vm;
 
-#[derive(Debug, Clone, Copy)]
-pub enum Symbol {
-    Function(usize),
-    Variable(usize),
-}
-
 #[derive(Debug)]
 pub struct CompiledModule {
     pub instructions: Vec<vm::Instruction>,
     pub func_descriptors: Vec<vm::FuncFrameDesc>,
-    pub global_vars: Vec<usize>,
-    pub symbol_map: HashMap<String, Symbol>,
+    // pub global_vars: Vec<usize>,
+    pub symbol_map: HashMap<String, vm::Symbol>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -91,7 +85,7 @@ impl CompiledModule {
         let (ident, mut frame_desc, instructions) = state.finalize();
         frame_desc.iptr = iptr;
         self.instructions.extend(instructions);
-        let desc = Symbol::Function(self.func_descriptors.len());
+        let desc = vm::Symbol::Function(self.func_descriptors.len());
         self.func_descriptors.push(frame_desc);
         self.symbol_map.insert(ident, desc);
         Ok(())
@@ -452,7 +446,7 @@ pub fn compile(module: ast::Module) -> Result<CompiledModule, CompilationError> 
     let mut cmod = CompiledModule {
         instructions: Vec::new(),
         func_descriptors: Vec::new(),
-        global_vars: Vec::new(),
+        // global_vars: Vec::new(),
         symbol_map: HashMap::new(),
     };
     for directive in module.0 {

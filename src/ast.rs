@@ -198,7 +198,8 @@ pub enum Token {
 
     #[regex(r"[0-9]+", |lex| lex.slice().parse().ok(), priority=2)]
     IntegerConst(i64),
-    #[regex(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?", |lex| lex.slice().parse().ok())]
+    // todo make sure this token does not conflict  with others
+    // #[regex(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?", |lex| lex.slice().parse().ok())]
     #[regex(r"0[dD][0-9a-fA-F]{16}", lex_float64_constant)]
     Float64Const(f64),
     #[regex(r"0[fF][0-9a-fA-F]{8}", lex_float32_constant)]
