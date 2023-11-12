@@ -62,6 +62,8 @@ mod test {
         const ALIGN: usize = std::mem::align_of::<f32>();
         const SIZE: usize = std::mem::size_of::<f32>();
         const N: usize = 1000;
+        const BLOCK_SIZE: u32 = 256;
+        const GRID_SIZE: u32 = (N as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
         let a = ctx.alloc(SIZE * N, ALIGN);
         let b = ctx.alloc(SIZE * N, ALIGN);
@@ -73,7 +75,7 @@ mod test {
         ctx.write(b, 0, bytemuck::cast_slice(&data_b));
 
         ctx.run(
-            vm::LaunchParams::new().func(0).grid1d(1).block1d(N as u32),
+            vm::LaunchParams::new().func(0).grid1d(GRID_SIZE).block1d(BLOCK_SIZE),
             &[vm::Argument::Ptr(a), vm::Argument::Ptr(b), vm::Argument::Ptr(c), vm::Argument::U64(N as u64)],
         )
         .unwrap();

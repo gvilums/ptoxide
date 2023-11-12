@@ -715,9 +715,6 @@ impl Context {
     }
 
     pub fn run(&mut self, params: LaunchParams, args: &[Argument]) -> Result<(), VmError> {
-        // for now we only support a single CTA
-        assert!(params.grid_dim.0 == 1 && params.grid_dim.1 == 1 && params.grid_dim.2 == 1);
-
         let desc = self.descriptors[params.func_id];
         let arg_size: usize = args
             .iter()

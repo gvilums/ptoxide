@@ -799,7 +799,7 @@ fn parse_guard(mut scanner: Scanner) -> ParseResult<Guard> {
 
 fn parse_predicate(mut scanner: Scanner) -> ParseResult<PredicateOp> {
     let pred = match scanner.must_pop()? {
-        Token::Ge => PredicateOp::GreaterThan,
+        Token::Ge => PredicateOp::GreaterThanEqual,
         t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
     Ok((pred, scanner))
