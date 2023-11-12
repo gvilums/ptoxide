@@ -571,3 +571,23 @@ pub fn compile(module: ast::Module) -> Result<CompiledModule, CompilationError> 
     }
     Ok(cmod)
 }
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn compile_add_simple() {
+        let contents = std::fs::read_to_string("kernels/add_simple.ptx").unwrap();
+        let module = crate::ast::parse_program(&contents).unwrap();
+        let _ = compile(module).unwrap();
+    }
+
+    #[test]
+    fn compile_add() {
+        let contents = std::fs::read_to_string("kernels/add.ptx").unwrap();
+        let module = crate::ast::parse_program(&contents).unwrap();
+        let _ = compile(module).unwrap();
+    }
+}
