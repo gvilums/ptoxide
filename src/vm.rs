@@ -376,6 +376,8 @@ pub enum VmError {
     CompileError(#[from] crate::compiler::CompilationError),
 }
 
+type VmResult<T> = Result<T, VmError>;
+
 #[derive(Clone, Copy, Debug)]
 pub struct DevicePointer(u64);
 
@@ -443,11 +445,11 @@ impl Barriers {
         }
     }
 
-    pub fn arrive(&mut self, idx: usize, target: usize) -> Result<Vec<ThreadState>, VmError> {
+    pub fn arrive(&mut self, idx: usize, target: usize) -> VmResult<Vec<ThreadState>> {
         todo!()
     }
 
-    pub fn block(&mut self, idx: usize, target: usize, thread: ThreadState) -> Result<Vec<ThreadState>, VmError> {
+    pub fn block(&mut self, idx: usize, target: usize, thread: ThreadState) -> VmResult<Vec<ThreadState>> {
         self.assert_size(idx);
         if let Some(ref mut barr) = self.barriers[idx] {
             barr.blocked.push(thread);
@@ -497,7 +499,7 @@ impl Context {
         }
     }
 
-    pub fn new_with_module(module: &str) -> Result<Self, VmError> {
+    pub fn new_with_module(module: &str) -> VmResult<Self> {
         let module = crate::ast::parse_program(module)?;
         let compiled = crate::compiler::compile(module)?;
         Ok(Self {
@@ -508,7 +510,7 @@ impl Context {
         })
     }
 
-    pub fn load(&mut self, module: &str) -> Result<(), crate::ast::ParseErr> {
+    pub fn load(&mut self, module: &str) -> VmResult<()> {
         let module = crate::ast::parse_program(module)?;
         let _compiled = crate::compiler::compile(module).unwrap();
         todo!()
@@ -554,7 +556,7 @@ impl Context {
         ntid: (u32, u32, u32),
         desc: FuncFrameDesc,
         init_stack: &[u8],
-    ) -> Result<(), VmError> {
+    ) -> VmResult<()> {
         let mut shared_mem = vec![0u8; desc.shared_size];
 
         let mut runnable = Vec::new();
@@ -597,7 +599,7 @@ impl Context {
         &mut self,
         thread: &mut ThreadState,
         shared_mem: &mut [u8],
-    ) -> Result<ThreadResult, VmError> {
+    ) -> VmResult<ThreadResult> {
         let inst = self.fetch_instr(thread.iptr_fetch_incr());
         match inst {
             Instruction::Load(space, dst, addr) => {
@@ -815,7 +817,7 @@ impl Context {
         }
     }
 
-    pub fn run(&mut self, params: LaunchParams, args: &[Argument]) -> Result<(), VmError> {
+    pub fn run(&mut self, params: LaunchParams, args: &[Argument]) -> VmResult<()> {
         let desc = self.descriptors[params.func_id];
         let arg_size: usize = args
             .iter()
