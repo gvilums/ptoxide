@@ -85,13 +85,14 @@ pub enum Constant {
     Pred(bool),
 }
 
+
 #[derive(Clone, Copy, Debug)]
 pub enum AddrOperand {
     Absolute(usize),
-    AbsoluteReg(usize, Reg64),
+    AbsoluteReg(usize, RegOperand),
     StackRelative(isize),
-    StackRelativeReg(isize, Reg64),
-    RegisterRelative(Reg64, isize),
+    StackRelativeReg(isize, RegOperand),
+    RegisterRelative(RegOperand, isize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -105,6 +106,7 @@ pub enum Instruction {
         src: RegOperand,
     },
     Move(Type, RegOperand, RegOperand),
+    LoadEffectiveAddress(Type, RegOperand, AddrOperand),
     Const(RegOperand, Constant),
     Add(Type, RegOperand, RegOperand, RegOperand),
     Mul(Type, MulMode, RegOperand, RegOperand, RegOperand),
@@ -338,25 +340,36 @@ impl ThreadState {
         self.iptr = desc.iptr;
     }
 
-    fn resolve_address(&self, addr: AddrOperand) -> usize {
+    fn read_reg_signed(&self, reg: RegOperand) -> VmResult<isize> {
+        match reg {
+            RegOperand::Pred(_) | RegOperand::Special(_) => Err(VmError::InvalidAddressOperandRegister(reg)),
+            RegOperand::B8(r) => Ok(self.get_i8(r) as isize),
+            RegOperand::B16(r) => Ok(self.get_i16(r) as isize),
+            RegOperand::B32(r) => Ok(self.get_i32(r) as isize),
+            RegOperand::B64(r) => Ok(self.get_i64(r) as isize),
+            RegOperand::B128(r) => Ok(self.get_i128(r) as isize),
+        }
+    }
+
+    fn resolve_address(&self, addr: AddrOperand) -> VmResult<usize> {
         match addr {
-            AddrOperand::Absolute(addr) => addr,
+            AddrOperand::Absolute(addr) => Ok(addr),
             AddrOperand::AbsoluteReg(addr, reg) => {
-                let offset = u64::from_ne_bytes(self.get_b64(reg)) as isize;
-                (addr as isize + offset) as usize
+                let offset = self.read_reg_signed(reg)?;
+                Ok((addr as isize + offset) as usize)
             }
             AddrOperand::StackRelative(offset) => {
                 let frame_size = self.stack_frames.last().unwrap().frame_size as isize;
-                (self.stack_data.len() as isize - frame_size + offset) as usize
+                Ok((self.stack_data.len() as isize - frame_size + offset) as usize)
             }
             AddrOperand::StackRelativeReg(offset, reg) => {
                 let frame_size = self.stack_frames.last().unwrap().frame_size as isize;
-                let reg_offset = u64::from_ne_bytes(self.get_b64(reg)) as isize;
-                (self.stack_data.len() as isize - frame_size + offset + reg_offset) as usize
+                let reg_offset = self.read_reg_signed(reg)?;
+                Ok((self.stack_data.len() as isize - frame_size + offset + reg_offset) as usize)
             }
             AddrOperand::RegisterRelative(reg, offset) => {
-                let reg_base = u64::from_ne_bytes(self.get_b64(reg)) as isize;
-                (reg_base + offset) as usize
+                let reg_base = self.read_reg_signed(reg)?;
+                Ok((reg_base + offset) as usize)
             }
         }
     }
@@ -364,6 +377,8 @@ impl ThreadState {
 
 #[derive(thiserror::Error, Debug)]
 pub enum VmError {
+    #[error("invalid address operand register {0:?}")]
+    InvalidAddressOperandRegister(RegOperand),
     #[error("Invalid register operand {:?} for instruction {:?}", .1, .0)]
     InvalidOperand(Instruction, RegOperand),
     #[error("Parameter data did not match descriptor")]
@@ -603,7 +618,7 @@ impl Context {
         let inst = self.fetch_instr(thread.iptr_fetch_incr());
         match inst {
             Instruction::Load(space, dst, addr) => {
-                let addr = thread.resolve_address(addr);
+                let addr = thread.resolve_address(addr)?;
                 let data = match space {
                     StateSpace::Global => self.global_mem.as_slice(),
                     StateSpace::Stack => thread.stack_data.as_slice(),
@@ -619,7 +634,7 @@ impl Context {
                 }
             }
             Instruction::Store(space, src, addr) => {
-                let addr = thread.resolve_address(addr);
+                let addr = thread.resolve_address(addr)?;
                 match src {
                     RegOperand::B8(r) => {
                         let val = thread.get_b8(r);
@@ -751,6 +766,18 @@ impl Context {
                 match (dst, value) {
                     (B64(dst), Constant::U64(value)) => thread.set_u64(dst, value),
                     (B32(dst), Constant::U32(value)) => thread.set_u32(dst, value),
+                    _ => todo!(),
+                }
+            }
+            Instruction::LoadEffectiveAddress(ty, dst, addr) => {
+                let addr = thread.resolve_address(addr)?;
+                match (ty, dst) {
+                    (Type::U64 | Type::B64 | Type::S64, RegOperand::B64(dst)) => {
+                        thread.set_u64(dst, addr as u64);
+                    }
+                    (Type::U32 | Type::B32 | Type::S32, RegOperand::B32(dst)) => {
+                        thread.set_u32(dst, addr as u32);
+                    }
                     _ => todo!(),
                 }
             }
@@ -895,12 +922,12 @@ mod test {
             Instruction::Load(
                 StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 3 }),
-                AddrOperand::RegisterRelative(Reg64 { id: 0 }, 0),
+                AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 0 }), 0),
             ),
             Instruction::Load(
                 StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 4 }),
-                AddrOperand::RegisterRelative(Reg64 { id: 1 }, 0),
+                AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 1 }), 0),
             ),
             // add values
             Instruction::Add(
@@ -913,7 +940,7 @@ mod test {
             Instruction::Store(
                 StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 5 }),
-                AddrOperand::RegisterRelative(Reg64 { id: 2 }, 0),
+                AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 2 }), 0),
             ),
             Instruction::Return,
         ];
@@ -1007,12 +1034,12 @@ mod test {
             Instruction::Load(
                 StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 3 }),
-                AddrOperand::RegisterRelative(Reg64 { id: 0 }, 0),
+                AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 0 }), 0),
             ),
             Instruction::Load(
                 StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 4 }),
-                AddrOperand::RegisterRelative(Reg64 { id: 1 }, 0),
+                AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 1 }), 0),
             ),
             // add values
             Instruction::Add(
@@ -1025,7 +1052,7 @@ mod test {
             Instruction::Store(
                 StateSpace::Global,
                 RegOperand::B64(Reg64 { id: 5 }),
-                AddrOperand::RegisterRelative(Reg64 { id: 2 }, 0),
+                AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 2 }), 0),
             ),
             Instruction::Return,
         ];

@@ -114,6 +114,7 @@ struct FuncCodegenState<'a> {
     var_map: VariableMap,
     regs: vm::RegDesc,
     stack_size: usize,
+    shared_size: usize,
     param_stack_offset: usize,
     label_map: HashMap<String, usize>,
     jump_map: Vec<String>,
@@ -129,6 +130,7 @@ impl<'a> FuncCodegenState<'a> {
             regs: vm::RegDesc::default(),
             stack_size: 0,
             param_stack_offset: 0,
+            shared_size: 0,
             label_map: HashMap::new(),
             jump_map: Vec::new(),
         }
@@ -136,10 +138,19 @@ impl<'a> FuncCodegenState<'a> {
 
     fn declare_var(&mut self, decl: ast::VarDecl) -> Result<(), CompilationError> {
         use ast::StateSpace;
-        use ast::Type::*;
         use vm::RegOperand;
+        if let ast::Type::Pred = decl.ty {
+            // predicates can only exist in the reg state space
+            if decl.state_space != StateSpace::Register {
+                todo!()
+            }
+        }
         match decl.state_space {
             StateSpace::Register => {
+                if !decl.array_bounds.is_empty() {
+                    todo!("array bounds not supported on register variables")
+                }
+                use ast::Type::*;
                 let opref = match decl.ty {
                     B128 => RegOperand::B128(self.regs.alloc_b128()),
                     B64 | U64 | S64 | F64 => RegOperand::B64(self.regs.alloc_b64()),
@@ -150,9 +161,20 @@ impl<'a> FuncCodegenState<'a> {
                 };
                 self.var_map.insert(decl.ident, Variable::Register(opref));
             }
+            StateSpace::Shared => {
+                let count = decl.array_bounds.iter().product::<u32>();
+                let size = decl.ty.size() * count as usize;
+                let align = decl.ty.alignment();
+                assert!(align.count_ones() == 1);
+                // align to required alignment
+                self.shared_size = (self.shared_size + align - 1) & !(align - 1);
+                let loc = vm::AddrOperand::Absolute(self.shared_size);
+                self.shared_size += size;
+                self.var_map
+                    .insert(decl.ident, Variable::Memory(loc));
+            },
             StateSpace::Global => todo!(),
             StateSpace::Local => todo!(),
-            StateSpace::Shared => todo!(),
             StateSpace::Constant => todo!(),
             StateSpace::Parameter => todo!(),
         }
@@ -162,6 +184,9 @@ impl<'a> FuncCodegenState<'a> {
     fn handle_vars(&mut self, vars: Vec<ast::VarDecl>) -> Result<(), CompilationError> {
         for decl in vars {
             if let Some(mult) = decl.multiplicity {
+                if !decl.array_bounds.is_empty() {
+                    todo!("array bounds not supported on parametrized variables")
+                }
                 for i in 0..mult {
                     let mut decl = decl.clone();
                     decl.ident.push_str(&i.to_string());
@@ -215,6 +240,15 @@ impl<'a> FuncCodegenState<'a> {
                     .push(vm::Instruction::Const(reg, vm::Constant::U32(val as u32)));
                 reg
             }
+            S32 => {
+                let reg = RegOperand::B32(self.regs.alloc_b32());
+                let ast::Immediate::Integer(val) = imm else {
+                    return Err(CompilationError::InvalidImmediateType);
+                };
+                self.instructions
+                    .push(vm::Instruction::Const(reg, vm::Constant::S32(val as i32)));
+                reg
+            }
             U64 | B64 => {
                 let reg = RegOperand::B64(self.regs.alloc_b64());
                 let ast::Immediate::Integer(val) = imm else {
@@ -222,6 +256,15 @@ impl<'a> FuncCodegenState<'a> {
                 };
                 self.instructions
                     .push(vm::Instruction::Const(reg, vm::Constant::U64(val as u64)));
+                reg
+            }
+            S64 => {
+                let reg = RegOperand::B64(self.regs.alloc_b64());
+                let ast::Immediate::Integer(val) = imm else {
+                    return Err(CompilationError::InvalidImmediateType);
+                };
+                self.instructions
+                    .push(vm::Instruction::Const(reg, vm::Constant::S64(val as i64)));
                 reg
             }
             _ => todo!(),
@@ -341,10 +384,6 @@ impl<'a> FuncCodegenState<'a> {
                             AddressOperand::AddressOffsetVar(_, ident) => todo!(),
                             AddressOperand::ArrayIndex(_, idx) => todo!(),
                         }
-                        let vm::RegOperand::B64(reg) = reg else {
-                            // can only use 64-bit registers as addresses
-                            todo!()
-                        };
                         AddrOperand::RegisterRelative(*reg, 0)
                     }
                     Some(Variable::Memory(addr)) => {
@@ -386,10 +425,6 @@ impl<'a> FuncCodegenState<'a> {
                             AddressOperand::AddressOffsetVar(_, ident) => todo!(),
                             AddressOperand::ArrayIndex(_, idx) => todo!(),
                         }
-                        let vm::RegOperand::B64(reg) = reg else {
-                            // can only use 64-bit registers as addresses
-                            todo!()
-                        };
                         AddrOperand::RegisterRelative(*reg, 0)
                     }
                     Some(Variable::Memory(addr)) => {
@@ -420,8 +455,28 @@ impl<'a> FuncCodegenState<'a> {
                 let [dst, src] = instr.operands.as_slice() else {
                     todo!()
                 };
-                let src_reg = self.get_src_reg(ty, src)?;
                 let dst_reg = self.get_dst_reg(ty, dst)?;
+                let src_reg = match src {
+                    Operand::Variable(ident) => {
+                        match self.var_map.get(ident) {
+                            Some(Variable::Register(reg)) => *reg,
+                            // this is an LEA operation, not just a normal mov 
+                            Some(Variable::Memory(addr)) => {
+                                self.instructions.push(vm::Instruction::LoadEffectiveAddress(ty, dst_reg, *addr));
+                                return Ok(())
+                            }
+                            // undefined variable
+                            None => {
+                                return Err(CompilationError::UndefinedSymbol(
+                                    ident.to_string(),
+                                ))
+                            }
+                        }
+                    },
+                    Operand::Immediate(imm) => self.construct_immediate(ty, *imm)?,
+                    Operand::SpecialReg(special) => vm::RegOperand::Special(*special),
+                    Operand::Address(_) => todo!(),
+                };
                 self.instructions
                     .push(vm::Instruction::Move(ty, dst_reg, src_reg));
             }
@@ -479,7 +534,21 @@ impl<'a> FuncCodegenState<'a> {
                 ret_param,
                 params,
             } => todo!(),
-            BarrierSync => todo!(),
+            BarrierSync => {
+                match instr.operands.as_slice() {
+                    [idx] => {
+                        let src_reg = self.get_src_reg(ast::Type::U32, idx)?;
+                        self.instructions.push(vm::Instruction::BarrierSync {
+                            idx: src_reg,
+                            cnt: None,
+                        })
+                    },
+                    [idx, cnt] => {
+                        todo!()
+                    }
+                    _ => todo!()
+                }
+            }
             Branch => {
                 let [Operand::Variable(ident)] = instr.operands.as_slice() else {
                     todo!()
@@ -588,6 +657,13 @@ mod test {
     #[test]
     fn compile_add() {
         let contents = std::fs::read_to_string("kernels/add.ptx").unwrap();
+        let module = crate::ast::parse_program(&contents).unwrap();
+        let _ = compile(module).unwrap();
+    }
+
+    #[test]
+    fn compile_transpose() {
+        let contents = std::fs::read_to_string("kernels/transpose.ptx").unwrap();
         let module = crate::ast::parse_program(&contents).unwrap();
         let _ = compile(module).unwrap();
     }

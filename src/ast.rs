@@ -367,7 +367,7 @@ pub struct FunctionParam {
     pub array_bounds: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateSpace {
     Global,
     Local,
