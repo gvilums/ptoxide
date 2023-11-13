@@ -13,8 +13,12 @@ fn lex_version_number(lex: &mut Lexer<Token>) -> Result<Version, LexError> {
     let Some((major_str, minor_str)) = lex.slice().split_once('.') else {
         return Err(LexError::ParseVersionNumber);
     };
-    let major = major_str.parse().map_err(|_| LexError::ParseVersionNumber)?;
-    let minor = minor_str.parse().map_err(|_| LexError::ParseVersionNumber)?;
+    let major = major_str
+        .parse()
+        .map_err(|_| LexError::ParseVersionNumber)?;
+    let minor = minor_str
+        .parse()
+        .map_err(|_| LexError::ParseVersionNumber)?;
     Ok(Version { major, minor })
 }
 
@@ -440,7 +444,7 @@ impl StateSpace {
             Global | Constant => vm::StateSpace::Global,
             Local | Parameter => vm::StateSpace::Stack,
             Shared => vm::StateSpace::Shared,
-            Register => return None
+            Register => return None,
         })
     }
 }
@@ -1076,7 +1080,9 @@ fn parse_operand(mut scanner: Scanner) -> ParseResult<Operand> {
             let res = if let Some(Token::Plus) = scanner.get() {
                 scanner.skip();
                 match scanner.must_pop()? {
-                    Token::IntegerConst(i) => Operand::Address(AddressOperand::AddressOffset(ident, *i)),
+                    Token::IntegerConst(i) => {
+                        Operand::Address(AddressOperand::AddressOffset(ident, *i))
+                    }
                     Token::Identifier(s) => {
                         Operand::Address(AddressOperand::AddressOffsetVar(ident, s.clone()))
                     }
