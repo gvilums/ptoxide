@@ -27,6 +27,12 @@ pub enum CompilationError {
     InvalidRegisterType(vm::RegOperand),
 }
 
+#[derive(Clone, Debug)]
+struct BasicBlock {
+    label: Option<String>,
+    instructions: Vec<ast::Instruction>,
+} 
+
 #[derive(Clone, Copy, Debug)]
 enum Variable {
     Register(vm::RegOperand),
@@ -355,10 +361,6 @@ impl<'a> FuncCodegenState<'a> {
         use ast::Operand;
         use vm::AddrOperand;
 
-        if let Some(label) = instr.label {
-            self.label_map.insert(label, self.instructions.len());
-        }
-
         if let Some(guard) = instr.guard {
             let (ident, expected) = match guard {
                 ast::Guard::Normal(s) => (s, false),
@@ -566,11 +568,14 @@ impl<'a> FuncCodegenState<'a> {
         Ok(())
     }
 
-    fn handle_instructions(
+    fn handle_basic_block(
         &mut self,
-        instructions: Vec<ast::Instruction>,
+        block: BasicBlock,
     ) -> Result<(), CompilationError> {
-        for instr in instructions {
+        if let Some(label) = block.label {
+            self.label_map.insert(label, self.instructions.len());
+        }
+        for instr in block.instructions {
             self.handle_instruction(instr)?;
         }
         Ok(())
@@ -582,22 +587,38 @@ impl<'a> FuncCodegenState<'a> {
             todo!()
         };
 
-        let mut instructions = Vec::new();
+        let mut block = BasicBlock {
+            label: None,
+            instructions: Vec::new(),
+        };
+        let mut bblocks = Vec::new();
         let mut var_decls = Vec::new();
         for statement in body {
             use ast::{Directive, Statement};
 
             match statement {
                 Statement::Directive(Directive::VarDecl(v)) => var_decls.push(v),
-                Statement::Instruction(i) => instructions.push(i),
+                Statement::Instruction(i) => block.instructions.push(i),
+                Statement::Label(ident) => {
+                    let mut block2 = BasicBlock {
+                        label: Some(ident),
+                        instructions: Vec::new(),
+                    };
+                    std::mem::swap(&mut block, &mut block2);
+                    bblocks.push(block2);
+                }
                 Statement::Grouping(_) => todo!(),
                 Statement::Directive(_) => todo!(),
             }
         }
 
+        bblocks.push(block);
+
         self.handle_params(func.params)?;
         self.handle_vars(var_decls)?;
-        self.handle_instructions(instructions)?;
+        for block in bblocks {
+            self.handle_basic_block(block)?;
+        }
 
         Ok(())
     }

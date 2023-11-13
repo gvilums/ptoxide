@@ -568,7 +568,7 @@ pub enum Immediate {
     Integer(i64),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Guard {
     Normal(Ident),
     Negated(Ident),
@@ -584,9 +584,8 @@ pub enum Directive {
     Pragma(Pragma),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Instruction {
-    pub label: Option<Ident>,
     pub guard: Option<Guard>,
     pub specifier: InstructionSpecifier,
     pub operands: Vec<Operand>,
@@ -597,6 +596,7 @@ pub enum Statement {
     Directive(Directive),
     Instruction(Instruction),
     Grouping(Vec<Statement>),
+    Label(Ident),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -624,7 +624,7 @@ pub enum RoundingMode {
     PosInf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InstructionSpecifier {
     Load(StateSpace, Type),
     Store(StateSpace, Type),
@@ -1165,14 +1165,6 @@ fn parse_directive(scanner: Scanner) -> ParseResult<Directive> {
 }
 
 fn parse_instruction(mut scanner: Scanner) -> ParseResult<Instruction> {
-    let label = if let Some(Token::Identifier(s)) = scanner.get() {
-        let s = s.clone();
-        scanner.skip();
-        scanner.consume(Token::Colon)?;
-        Some(s)
-    } else {
-        None
-    };
     let guard = if let Ok((guard, res)) = parse_guard(scanner) {
         scanner = res;
         Some(guard)
@@ -1185,7 +1177,6 @@ fn parse_instruction(mut scanner: Scanner) -> ParseResult<Instruction> {
 
     Ok((
         Instruction {
-            label,
             guard,
             specifier,
             operands,
@@ -1194,7 +1185,7 @@ fn parse_instruction(mut scanner: Scanner) -> ParseResult<Instruction> {
     ))
 }
 
-fn parse_statement(scanner: Scanner) -> ParseResult<Statement> {
+fn parse_statement(mut scanner: Scanner) -> ParseResult<Statement> {
     match scanner.must_get()? {
         Token::LeftBrace => {
             let (grouping, scanner) = parse_grouping(scanner)?;
@@ -1203,6 +1194,12 @@ fn parse_statement(scanner: Scanner) -> ParseResult<Statement> {
         t if t.is_directive() => {
             let (dir, scanner) = parse_directive(scanner)?;
             Ok((Statement::Directive(dir), scanner))
+        }
+        Token::Identifier(i) => {
+            let i = i.clone();
+            scanner.skip();
+            scanner.consume(Token::Colon)?;
+            Ok((Statement::Label(i), scanner))
         }
         _ => {
             let (instr, scanner) = parse_instruction(scanner)?;
