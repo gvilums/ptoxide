@@ -621,7 +621,7 @@ impl<'a> FuncCodegenState<'a> {
         let frame_desc = vm::FuncFrameDesc {
             iptr: vm::IPtr(self.instructions.len()),
             frame_size: self.stack_size,
-            shared_size: 0,
+            shared_size: self.shared_size,
             arg_size: self.param_stack_offset,
             regs: self.regs,
         };

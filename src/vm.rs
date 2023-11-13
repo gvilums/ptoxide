@@ -436,8 +436,18 @@ impl LaunchParams {
         self
     }
 
+    pub fn grid2d(mut self, x: u32, y: u32) -> LaunchParams {
+        self.grid_dim = (x, y, 1);
+        self
+    }
+
     pub fn block1d(mut self, x: u32) -> LaunchParams {
         self.block_dim = (x, 1, 1);
+        self
+    }
+
+    pub fn block2d(mut self, x: u32, y: u32) -> LaunchParams {
+        self.block_dim = (x, y, 1);
         self
     }
 }
@@ -556,11 +566,12 @@ impl Context {
         &'a mut self,
         space: StateSpace,
         state: &'a mut ThreadState,
+        shared: &'a mut [u8],
     ) -> &'a mut [u8] {
         match space {
             StateSpace::Global => self.global_mem.as_mut_slice(),
             StateSpace::Stack => state.stack_data.as_mut_slice(),
-            StateSpace::Shared => todo!(),
+            StateSpace::Shared => shared,
         }
     }
 
@@ -638,23 +649,23 @@ impl Context {
                 match src {
                     RegOperand::B8(r) => {
                         let val = thread.get_b8(r);
-                        self.get_data_ptr(space, thread)[addr..addr + 1].copy_from_slice(&val);
+                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 1].copy_from_slice(&val);
                     }
                     RegOperand::B16(r) => {
                         let val = thread.get_b16(r);
-                        self.get_data_ptr(space, thread)[addr..addr + 2].copy_from_slice(&val);
+                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 2].copy_from_slice(&val);
                     }
                     RegOperand::B32(r) => {
                         let val = thread.get_b32(r);
-                        self.get_data_ptr(space, thread)[addr..addr + 4].copy_from_slice(&val);
+                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 4].copy_from_slice(&val);
                     }
                     RegOperand::B64(r) => {
                         let val = thread.get_b64(r);
-                        self.get_data_ptr(space, thread)[addr..addr + 8].copy_from_slice(&val);
+                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 8].copy_from_slice(&val);
                     }
                     RegOperand::B128(r) => {
                         let val = thread.get_b128(r);
-                        self.get_data_ptr(space, thread)[addr..addr + 16].copy_from_slice(&val);
+                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 16].copy_from_slice(&val);
                     }
                     o => return Err(VmError::InvalidOperand(inst, o)),
                 }
@@ -709,6 +720,10 @@ impl Context {
                             thread
                                 .set_u64(dst, thread.get_u32(a) as u64 * thread.get_u32(b) as u64);
                         }
+                        Type::S32 => {
+                            thread
+                                .set_i64(dst, thread.get_i32(a) as i64 * thread.get_i32(b) as i64);
+                        }
                         _ => todo!(),
                     },
                     _ => todo!(),
@@ -720,6 +735,12 @@ impl Context {
                     (B64(dst), B64(a), B64(b)) => match ty {
                         Type::U64 | Type::B64 => {
                             thread.set_u64(dst, thread.get_u64(a) << thread.get_u64(b));
+                        }
+                        _ => todo!(),
+                    },
+                    (B32(dst), B32(a), B32(b)) => match ty {
+                        Type::U32 | Type::B32 => {
+                            thread.set_u32(dst, thread.get_u32(a) << thread.get_u32(b));
                         }
                         _ => todo!(),
                     },
@@ -758,6 +779,18 @@ impl Context {
                     (B32(dst), Special(SpecialReg::NumCtaX)) => {
                         thread.set_u32(dst, thread.nctaid.0);
                     }
+                    (B32(dst), Special(SpecialReg::ThreadIdY)) => {
+                        thread.set_u32(dst, thread.tid.1);
+                    }
+                    (B32(dst), Special(SpecialReg::NumThreadY)) => {
+                        thread.set_u32(dst, thread.ntid.1);
+                    }
+                    (B32(dst), Special(SpecialReg::CtaIdY)) => {
+                        thread.set_u32(dst, thread.ctaid.1);
+                    }
+                    (B32(dst), Special(SpecialReg::NumCtaY)) => {
+                        thread.set_u32(dst, thread.nctaid.1);
+                    }
                     _ => todo!(),
                 }
             }
@@ -765,7 +798,9 @@ impl Context {
                 use RegOperand::*;
                 match (dst, value) {
                     (B64(dst), Constant::U64(value)) => thread.set_u64(dst, value),
+                    (B64(dst), Constant::S64(value)) => thread.set_i64(dst, value),
                     (B32(dst), Constant::U32(value)) => thread.set_u32(dst, value),
+                    (B32(dst), Constant::S32(value)) => thread.set_i32(dst, value),
                     _ => todo!(),
                 }
             }
