@@ -1,0 +1,4 @@
+digit = _{ '0'..'9' }
+ident = { (digit | 'a'..'z' | 'A'..'Z')+ }
+ident_list = _{ !digit ~ ident ~ (" " ~ ident)+ }
+program = _{ SOI ~ ident_list ~ EOI }

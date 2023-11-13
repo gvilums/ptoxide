@@ -449,7 +449,7 @@ impl StateSpace {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     B128,
     B64,
@@ -587,7 +587,7 @@ pub enum Directive {
 #[derive(Debug, Clone)]
 pub struct Instruction {
     pub guard: Option<Guard>,
-    pub specifier: InstructionSpecifier,
+    pub specifier: Operation,
     pub operands: Vec<Operand>,
 }
 
@@ -625,7 +625,7 @@ pub enum RoundingMode {
 }
 
 #[derive(Debug, Clone)]
-pub enum InstructionSpecifier {
+pub enum Operation {
     Load(StateSpace, Type),
     Store(StateSpace, Type),
     Move(Type),
@@ -909,62 +909,62 @@ fn parse_predicate(mut scanner: Scanner) -> ParseResult<PredicateOp> {
     Ok((pred, scanner))
 }
 
-fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifier> {
+fn parse_operation(mut scanner: Scanner) -> ParseResult<Operation> {
     let t = scanner.must_pop()?;
     match t {
         Token::Load => {
             let (state_space, scanner) = parse_state_space(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::Load(state_space, ty), scanner))
+            Ok((Operation::Load(state_space, ty), scanner))
         }
         Token::Store => {
             let (state_space, scanner) = parse_state_space(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::Store(state_space, ty), scanner))
+            Ok((Operation::Store(state_space, ty), scanner))
         }
         Token::Move => {
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::Move(ty), scanner))
+            Ok((Operation::Move(ty), scanner))
         }
         Token::Add => {
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::Add(ty), scanner))
+            Ok((Operation::Add(ty), scanner))
         }
         Token::Sub => {
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::Sub(ty), scanner))
+            Ok((Operation::Sub(ty), scanner))
         }
         Token::Or => {
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::Or(ty), scanner))
+            Ok((Operation::Or(ty), scanner))
         }
         Token::And => {
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::And(ty), scanner))
+            Ok((Operation::And(ty), scanner))
         }
         Token::Mul => {
             let (mode, scanner) = parse_mul_mode(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::Multiply(mode, ty), scanner))
+            Ok((Operation::Multiply(mode, ty), scanner))
         }
         Token::MultiplyAdd => {
             let (mode, scanner) = parse_mul_mode(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::MultiplyAdd(mode, ty), scanner))
+            Ok((Operation::MultiplyAdd(mode, ty), scanner))
         }
         Token::FusedMulAdd => {
             let (mode, scanner) = parse_rounding_mode(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::FusedMulAdd(mode, ty), scanner))
+            Ok((Operation::FusedMulAdd(mode, ty), scanner))
         }
         Token::Negate => {
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::Negate(ty), scanner))
+            Ok((Operation::Negate(ty), scanner))
         }
         Token::Convert => {
             let (to, scanner) = parse_type(scanner)?;
             let (from, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::Convert { to, from }, scanner))
+            Ok((Operation::Convert { to, from }, scanner))
         }
         Token::Call => {
             let uniform = scanner.consume_match(Token::Uniform);
@@ -1003,7 +1003,7 @@ fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifi
             };
 
             Ok((
-                InstructionSpecifier::Call {
+                Operation::Call {
                     uniform,
                     ident,
                     ret_param,
@@ -1018,7 +1018,7 @@ fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifi
                 let (state_space, scanner) = parse_state_space(scanner)?;
                 let (ty, scanner) = parse_type(scanner)?;
                 Ok((
-                    InstructionSpecifier::ConvertAddressTo(ty, state_space),
+                    Operation::ConvertAddressTo(ty, state_space),
                     scanner,
                 ))
             }
@@ -1026,7 +1026,7 @@ fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifi
                 let (state_space, scanner) = parse_state_space(scanner)?;
                 let (ty, scanner) = parse_type(scanner)?;
                 Ok((
-                    InstructionSpecifier::ConvertAddress(ty, state_space),
+                    Operation::ConvertAddress(ty, state_space),
                     scanner,
                 ))
             }
@@ -1034,21 +1034,21 @@ fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifi
         Token::SetPredicate => {
             let (pred, scanner) = parse_predicate(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::SetPredicate(pred, ty), scanner))
+            Ok((Operation::SetPredicate(pred, ty), scanner))
         }
         Token::ShiftLeft => {
             let (ty, scanner) = parse_type(scanner)?;
-            Ok((InstructionSpecifier::ShiftLeft(ty), scanner))
+            Ok((Operation::ShiftLeft(ty), scanner))
         }
-        Token::Branch => Ok((InstructionSpecifier::Branch, scanner)),
-        Token::Return => Ok((InstructionSpecifier::Return, scanner)),
+        Token::Branch => Ok((Operation::Branch, scanner)),
+        Token::Return => Ok((Operation::Return, scanner)),
         Token::Bar => {
             // cta token is meaningless
             if let Some(Token::Cta) = scanner.get() {
                 scanner.skip();
             }
             scanner.consume(Token::Sync)?;
-            Ok((InstructionSpecifier::BarrierSync, scanner))
+            Ok((Operation::BarrierSync, scanner))
         }
         t => Err(ParseErr::UnexpectedToken(t.clone())),
     }
@@ -1172,7 +1172,7 @@ fn parse_instruction(mut scanner: Scanner) -> ParseResult<Instruction> {
         None
     };
 
-    let (specifier, scanner) = parse_instr_specifier(scanner)?;
+    let (specifier, scanner) = parse_operation(scanner)?;
     let (operands, scanner) = parse_operands(scanner)?;
 
     Ok((

@@ -8,4 +8,6 @@ edition = "2021"
 [dependencies]
 bytemuck = "1.14.0"
 logos = "0.13.0"
+pest = "2.7.5"
+pest_derive = "2.7.5"
 thiserror = "1.0.50"

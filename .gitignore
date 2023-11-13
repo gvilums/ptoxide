@@ -1,3 +1,5 @@
 /target
 *.ptx
 .vscode
+flamegraph.svg
+perf.data

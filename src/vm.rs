@@ -109,7 +109,12 @@ pub enum Instruction {
     LoadEffectiveAddress(Type, RegOperand, AddrOperand),
     Const(RegOperand, Constant),
     Add(Type, RegOperand, RegOperand, RegOperand),
+    Sub(Type, RegOperand, RegOperand, RegOperand),
+    Or(Type, RegOperand, RegOperand, RegOperand),
+    And(Type, RegOperand, RegOperand, RegOperand),
     Mul(Type, MulMode, RegOperand, RegOperand, RegOperand),
+    // todo this should just be expressed as sub with 0
+    Neg(Type, RegOperand, RegOperand),
     ShiftLeft(Type, RegOperand, RegOperand, RegOperand),
     SetPredicate(Type, PredicateOp, RegPred, RegOperand, RegOperand),
     BarrierSync {
@@ -670,6 +675,33 @@ impl Context {
                     o => return Err(VmError::InvalidOperand(inst, o)),
                 }
             }
+            Instruction::Sub(ty, dst, a, b) => {
+                use RegOperand::*;
+                match (dst, a, b) {
+                    (B64(dst), B64(a), B64(b)) => match ty {
+                        Type::U64 | Type::B64 => {
+                            thread.set_u64(dst, thread.get_u64(a) - thread.get_u64(b));
+                        }
+                        Type::S64 => {
+                            thread.set_i64(dst, thread.get_i64(a) - thread.get_i64(b));
+                        }
+                        _ => todo!(),
+                    },
+                    (B32(dst), B32(a), B32(b)) => match ty {
+                        Type::U32 | Type::B32 => {
+                            thread.set_u32(dst, thread.get_u32(a) - thread.get_u32(b));
+                        }
+                        Type::S32 => {
+                            thread.set_i32(dst, thread.get_i32(a) - thread.get_i32(b));
+                        }
+                        Type::F32 => {
+                            thread.set_f32(dst, thread.get_f32(a) - thread.get_f32(b));
+                        }
+                        _ => todo!(),
+                    },
+                    _ => todo!(),
+                }
+            }
             Instruction::Add(ty, dst, a, b) => {
                 use RegOperand::*;
                 match (dst, a, b) {
@@ -704,7 +736,10 @@ impl Context {
                         Type::U64 | Type::B64 => {
                             thread.set_u64(dst, thread.get_u64(a) * thread.get_u64(b));
                         }
-                        _ => todo!(),
+                        Type::S64 => {
+                            thread.set_i64(dst, thread.get_i64(a) * thread.get_i64(b));
+                        }
+                        _ => todo!()
                     },
                     (MulMode::Low, B32(dst), B32(a), B32(b)) => match ty {
                         Type::U32 | Type::B32 => {
@@ -712,6 +747,9 @@ impl Context {
                         }
                         Type::S32 => {
                             thread.set_i32(dst, thread.get_i32(a) * thread.get_i32(b));
+                        }
+                        Type::F32 => {
+                            thread.set_f32(dst, thread.get_f32(a) * thread.get_f32(b));
                         }
                         _ => todo!(),
                     },
@@ -727,6 +765,46 @@ impl Context {
                         _ => todo!(),
                     },
                     _ => todo!(),
+                }
+            }
+            Instruction::Or(ty, dst, a, b) => {
+                use RegOperand::*;
+                match (dst, a, b) {
+                    (old @ Pred(dst), Pred(a), Pred(b)) => {
+                        if ty != Type::Pred {
+                            return Err(VmError::InvalidOperand(inst, old));
+                        }
+                        thread.set_pred(dst, thread.get_pred(a) | thread.get_pred(b));
+                    }
+                    _ => todo!()
+                }
+            }
+            Instruction::And(ty, dst, a, b) => {
+                use RegOperand::*;
+                match (dst, a, b) {
+                    (B64(dst), B64(a), B64(b)) => {
+                        match ty {
+                            Type::B64 => {
+                                thread.set_u64(dst, thread.get_u64(a) & thread.get_u64(b));
+                            }
+                            _ => todo!()
+                        }
+                    }
+                    _ => todo!()
+                }
+            }
+            Instruction::Neg(ty, dst, src) => {
+                use RegOperand::*;
+                match (dst, src) {
+                    (B64(dst), B64(src)) => {
+                        match ty {
+                            Type::S64 => {
+                                thread.set_i64(dst, -thread.get_i64(src));
+                            }
+                            _ => todo!()
+                        }
+                    }
+                    _ => todo!()
                 }
             }
             Instruction::ShiftLeft(ty, dst, a, b) => {
@@ -767,6 +845,9 @@ impl Context {
                     (B64(dst), B64(src)) => {
                         thread.set_b64(dst, thread.get_b64(src));
                     }
+                    (B32(dst), B32(src)) => {
+                        thread.set_b32(dst, thread.get_b32(src));
+                    }
                     (B32(dst), Special(SpecialReg::ThreadIdX)) => {
                         thread.set_u32(dst, thread.tid.0);
                     }
@@ -801,6 +882,7 @@ impl Context {
                     (B64(dst), Constant::S64(value)) => thread.set_i64(dst, value),
                     (B32(dst), Constant::U32(value)) => thread.set_u32(dst, value),
                     (B32(dst), Constant::S32(value)) => thread.set_i32(dst, value),
+                    (B32(dst), Constant::F32(value)) => thread.set_f32(dst, value),
                     _ => todo!(),
                 }
             }
@@ -818,8 +900,8 @@ impl Context {
             }
             Instruction::SetPredicate(ty, op, dst, a, b) => match (ty, a, b) {
                 (Type::U64, RegOperand::B64(a), RegOperand::B64(b)) => {
-                    let a = u64::from_ne_bytes(thread.get_b64(a));
-                    let b = u64::from_ne_bytes(thread.get_b64(b));
+                    let a = thread.get_u64(a);
+                    let b = thread.get_u64(b);
                     let value = match op {
                         PredicateOp::LessThan => a < b,
                         PredicateOp::LessThanEqual => a <= b,
@@ -830,7 +912,20 @@ impl Context {
                     };
                     thread.set_pred(dst, value);
                 }
-                _ => todo!(),
+                (Type::S64, RegOperand::B64(a), RegOperand::B64(b)) => {
+                    let a = thread.get_i64(a);
+                    let b = thread.get_i64(b);
+                    let value = match op {
+                        PredicateOp::LessThan => a < b,
+                        PredicateOp::LessThanEqual => a <= b,
+                        PredicateOp::Equal => a == b,
+                        PredicateOp::NotEqual => a != b,
+                        PredicateOp::GreaterThan => a > b,
+                        PredicateOp::GreaterThanEqual => a >= b,
+                    };
+                    thread.set_pred(dst, value);
+                }
+                _ => todo!()
             },
             Instruction::BarrierSync { idx, cnt } => {
                 let RegOperand::B32(idx) = idx else {

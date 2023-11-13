@@ -274,6 +274,15 @@ impl<'a> FuncCodegenState<'a> {
                     .push(vm::Instruction::Const(reg, vm::Constant::S64(val as i64)));
                 reg
             }
+            F32 => {
+                let reg = RegOperand::B32(self.regs.alloc_b32());
+                let ast::Immediate::Float32(val) = imm else {
+                    return Err(CompilationError::InvalidImmediateType);
+                };
+                self.instructions
+                    .push(vm::Instruction::Const(reg, vm::Constant::F32(val as f32)));
+                reg
+            }
             _ => todo!(),
         };
         Ok(opref)
@@ -357,7 +366,7 @@ impl<'a> FuncCodegenState<'a> {
 
     fn handle_instruction(&mut self, instr: ast::Instruction) -> Result<(), CompilationError> {
         use ast::AddressOperand;
-        use ast::InstructionSpecifier::*;
+        use ast::Operation::*;
         use ast::Operand;
         use vm::AddrOperand;
 
@@ -382,12 +391,15 @@ impl<'a> FuncCodegenState<'a> {
                 let src_op = match self.var_map.get(addr_op.get_ident()) {
                     Some(Variable::Register(reg)) => {
                         match addr_op {
-                            AddressOperand::Address(_) => {}
-                            AddressOperand::AddressOffset(_, offset) => todo!(),
+                            AddressOperand::Address(_) => {
+                                AddrOperand::RegisterRelative(*reg, 0)
+                            }
+                            AddressOperand::AddressOffset(_, offset) => {
+                                AddrOperand::RegisterRelative(*reg, *offset as isize)
+                            },
                             AddressOperand::AddressOffsetVar(_, ident) => todo!(),
                             AddressOperand::ArrayIndex(_, idx) => todo!(),
                         }
-                        AddrOperand::RegisterRelative(*reg, 0)
                     }
                     Some(Variable::Memory(addr)) => {
                         match addr_op {
@@ -500,6 +512,27 @@ impl<'a> FuncCodegenState<'a> {
                 self.instructions.push(vm::Instruction::Mul(ty, mode, dst, a, b));
                 self.instructions.push(vm::Instruction::Add(ty, dst, dst, c));
             }
+            Sub(ty) => {
+                let [dst, a, b] = self.reg_dst_2src(ty, &instr.operands)?;
+                self.instructions.push(vm::Instruction::Sub(ty, dst, a, b))
+            },
+            Or(ty) => {
+                let [dst, a, b] = self.reg_dst_2src(ty, &instr.operands)?;
+                self.instructions.push(vm::Instruction::Or(ty, dst, a, b))
+            },
+            And(ty) => {
+                let [dst, a, b] = self.reg_dst_2src(ty, &instr.operands)?;
+                self.instructions.push(vm::Instruction::And(ty, dst, a, b))
+            },
+            FusedMulAdd(_, ty) => {
+                let [dst, a, b, c] = self.reg_dst_3src(ty, &instr.operands)?;
+                self.instructions.push(vm::Instruction::Mul(ty, ast::MulMode::Low, dst, a, b));
+                self.instructions.push(vm::Instruction::Add(ty, dst, dst, c));
+            },
+            Negate(ty) => {
+                let [dst, src] = self.reg_dst_1src(ty, &instr.operands)?;
+                self.instructions.push(vm::Instruction::Neg(ty, dst, src));
+            },
             Convert { from, to } => {
                 let [dst, src] = self.reg_dst_1src(from, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Convert {
@@ -563,7 +596,6 @@ impl<'a> FuncCodegenState<'a> {
                 });
             }
             Return => self.instructions.push(vm::Instruction::Return),
-            _ => todo!()
         };
         Ok(())
     }
@@ -607,8 +639,9 @@ impl<'a> FuncCodegenState<'a> {
                     std::mem::swap(&mut block, &mut block2);
                     bblocks.push(block2);
                 }
-                Statement::Grouping(_) => todo!(),
-                Statement::Directive(_) => todo!(),
+                // ignore pragmas
+                Statement::Directive(Directive::Pragma(_)) => {},
+                _ => todo!(),
             }
         }
 
@@ -687,6 +720,13 @@ mod test {
     #[test]
     fn compile_transpose() {
         let contents = std::fs::read_to_string("kernels/transpose.ptx").unwrap();
+        let module = crate::ast::parse_program(&contents).unwrap();
+        let _ = compile(module).unwrap();
+    }
+
+    #[test]
+    fn compile_gemm() {
+        let contents = std::fs::read_to_string("kernels/gemm.ptx").unwrap();
         let module = crate::ast::parse_program(&contents).unwrap();
         let _ = compile(module).unwrap();
     }
