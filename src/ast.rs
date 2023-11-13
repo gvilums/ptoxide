@@ -3,21 +3,36 @@ use thiserror::Error;
 
 use crate::vm;
 
-fn lex_reg_multiplicity(lex: &mut Lexer<Token>) -> Option<u32> {
+fn lex_reg_multiplicity(lex: &mut Lexer<Token>) -> Result<u32, LexError> {
     let mut s = lex.slice();
     s = &s[1..s.len() - 1];
-    s.parse().ok()
+    s.parse().map_err(|_| LexError::ParseRegMultiplicity)
 }
 
-fn lex_version_number(lex: &mut Lexer<Token>) -> Option<Version> {
-    let (major_str, minor_str) = lex.slice().split_once('.')?;
-    let major = major_str.parse().ok()?;
-    let minor = minor_str.parse().ok()?;
-    Some(Version { major, minor })
+fn lex_version_number(lex: &mut Lexer<Token>) -> Result<Version, LexError> {
+    let Some((major_str, minor_str)) = lex.slice().split_once('.') else {
+        return Err(LexError::ParseVersionNumber);
+    };
+    let major = major_str.parse().map_err(|_| LexError::ParseVersionNumber)?;
+    let minor = minor_str.parse().map_err(|_| LexError::ParseVersionNumber)?;
+    Ok(Version { major, minor })
 }
 
-fn lex_float32_constant(lex: &mut Lexer<Token>) -> Option<f32> {
-    todo!()
+fn lex_float32_constant(lex: &mut Lexer<Token>) -> Result<f32, LexError> {
+    let Some(vals) = lex.slice().as_bytes().get(2..) else {
+        return Err(LexError::ParseFloatConst);
+    };
+    let mut val = 0u32;
+    for c in vals {
+        val <<= 4;
+        val |= match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => return Err(LexError::ParseFloatConst),
+        } as u32;
+    }
+    Ok(f32::from_bits(val))
 }
 
 fn lex_float64_constant(lex: &mut Lexer<Token>) -> Option<f64> {
@@ -26,7 +41,9 @@ fn lex_float64_constant(lex: &mut Lexer<Token>) -> Option<f64> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum LexError {
-    NumberParseError,
+    ParseFloatConst,
+    ParseRegMultiplicity,
+    ParseVersionNumber,
     #[default]
     Other,
 }
@@ -70,6 +87,8 @@ pub enum Token {
     Align,
     #[token(".noreturn")]
     NoReturn,
+    #[token(".pragma")]
+    Pragma,
 
     #[token(".b128")]
     Bit128,
@@ -119,6 +138,8 @@ pub enum Token {
     Store,
     #[token("add")]
     Add,
+    #[token("sub")]
+    Sub,
     #[token("mul")]
     Mul,
     #[token("mov")]
@@ -139,6 +160,14 @@ pub enum Token {
     SetPredicate,
     #[token("call")]
     Call,
+    #[token("or")]
+    Or,
+    #[token("and")]
+    And,
+    #[token("fma")]
+    FusedMulAdd,
+    #[token("neg")]
+    Negate,
 
     #[token("bar")]
     #[token("barrier")]
@@ -153,6 +182,15 @@ pub enum Token {
     #[token(".to")]
     To,
 
+    #[token(".rn")]
+    Rn,
+    #[token(".rz")]
+    Rz,
+    #[token(".rm")]
+    Rm,
+    #[token(".rp")]
+    Rp,
+
     #[token(".lo")]
     Low,
     #[token(".hi")]
@@ -160,6 +198,16 @@ pub enum Token {
     #[token(".wide")]
     Wide,
 
+    #[token(".eq")]
+    Eq,
+    #[token(".ne")]
+    Ne,
+    #[token(".lt")]
+    Lt,
+    #[token(".le")]
+    Le,
+    #[token(".gt")]
+    Gt,
     #[token(".ge")]
     Ge,
 
@@ -196,7 +244,7 @@ pub enum Token {
     #[regex(r"[a-zA-Z][a-zA-Z0-9_$]*|[_$%][a-zA-Z0-9_$]+", |lex| lex.slice().to_string())]
     Identifier(String),
 
-    #[regex(r"[0-9]+", |lex| lex.slice().parse().ok(), priority=2)]
+    #[regex(r"-?[0-9]+", |lex| lex.slice().parse().ok(), priority=2)]
     IntegerConst(i64),
     // todo make sure this token does not conflict  with others
     // #[regex(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?", |lex| lex.slice().parse().ok())]
@@ -233,6 +281,8 @@ pub enum Token {
     #[token(",")]
     Comma,
 
+    #[regex(r#""[^"]*""#, |lex| lex.slice().to_string())]
+    StringLiteral(String),
     #[regex(r"\d+\.\d+", lex_version_number)]
     VersionNumber(Version),
 
@@ -256,7 +306,8 @@ impl Token {
                 | Token::Local
                 | Token::Shared
                 | Token::Const
-                | Token::Align,
+                | Token::Align
+                | Token::Pragma
         )
     }
 }
@@ -336,6 +387,11 @@ type Ident = String;
 pub struct Version {
     major: i32,
     minor: i32,
+}
+
+#[derive(Clone, Debug)]
+pub struct Pragma {
+    value: String,
 }
 
 #[derive(Debug)]
@@ -503,7 +559,8 @@ pub enum Operand {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Immediate {
-    Float(f64),
+    Float32(f32),
+    Float64(f64),
     Integer(i64),
 }
 
@@ -520,6 +577,7 @@ pub enum Directive {
     Target(String),
     AddressSize(AddressSize),
     Function(Function),
+    Pragma(Pragma),
 }
 
 #[derive(Debug)]
@@ -554,12 +612,25 @@ pub enum MulMode {
     Wide,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum RoundingMode {
+    NearestEvent,
+    Zero,
+    NegInf,
+    PosInf,
+}
+
 #[derive(Debug)]
 pub enum InstructionSpecifier {
     Load(StateSpace, Type),
     Store(StateSpace, Type),
     Move(Type),
     Add(Type),
+    Sub(Type),
+    Or(Type),
+    And(Type),
+    FusedMulAdd(RoundingMode, Type),
+    Negate(Type),
     Multiply(MulMode, Type),
     MultiplyAdd(MulMode, Type),
     Convert {
@@ -585,10 +656,23 @@ pub fn parse_program(src: &str) -> Result<Module, ParseErr> {
     // let res = Token::lexer(src)
     //     .spanned()
     //     .map(|(t, span)| t.map_err(|e| (e, span)))
-    //     .collect::<Result<Vec<_>, _>>();
+    //     // .collect::<Result<Vec<_>, _>>();
+    //     .collect::<Vec<_>>();
+    // dbg!(res);
     let tokens = Token::lexer(src).collect::<Result<Vec<_>, _>>()?;
     let scanner = Scanner::new(&tokens);
     parse_module(scanner).map(|(module, _)| module)
+}
+
+fn parse_pragma(mut scanner: Scanner) -> ParseResult<Pragma> {
+    scanner.consume(Token::Pragma)?;
+    match scanner.must_pop()? {
+        Token::StringLiteral(s) => {
+            scanner.consume(Token::Semicolon)?;
+            Ok((Pragma { value: s.clone() }, scanner))
+        }
+        t => Err(ParseErr::UnexpectedToken(t.clone())),
+    }
 }
 
 fn parse_version(mut scanner: Scanner) -> ParseResult<Version> {
@@ -716,7 +800,18 @@ fn parse_special_reg(mut scanner: Scanner) -> ParseResult<SpecialReg> {
     Ok((reg, scanner))
 }
 
-fn parse_mode(mut scanner: Scanner) -> ParseResult<MulMode> {
+fn parse_rounding_mode(mut scanner: Scanner) -> ParseResult<RoundingMode> {
+    let mode = match scanner.must_pop()? {
+        Token::Rn => RoundingMode::NearestEvent,
+        Token::Rz => RoundingMode::Zero,
+        Token::Rm => RoundingMode::NegInf,
+        Token::Rp => RoundingMode::PosInf,
+        t => return Err(ParseErr::UnexpectedToken(t.clone())),
+    };
+    Ok((mode, scanner))
+}
+
+fn parse_mul_mode(mut scanner: Scanner) -> ParseResult<MulMode> {
     let mode = match scanner.must_pop()? {
         Token::Low => MulMode::Low,
         Token::High => MulMode::High,
@@ -800,13 +895,19 @@ fn parse_guard(mut scanner: Scanner) -> ParseResult<Guard> {
 fn parse_predicate(mut scanner: Scanner) -> ParseResult<PredicateOp> {
     let pred = match scanner.must_pop()? {
         Token::Ge => PredicateOp::GreaterThanEqual,
+        Token::Gt => PredicateOp::GreaterThan,
+        Token::Le => PredicateOp::LessThanEqual,
+        Token::Lt => PredicateOp::LessThan,
+        Token::Eq => PredicateOp::Equal,
+        Token::Ne => PredicateOp::NotEqual,
         t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
     Ok((pred, scanner))
 }
 
 fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifier> {
-    match scanner.must_pop()? {
+    let t = scanner.must_pop()?;
+    match t {
         Token::Load => {
             let (state_space, scanner) = parse_state_space(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
@@ -825,15 +926,36 @@ fn parse_instr_specifier(mut scanner: Scanner) -> ParseResult<InstructionSpecifi
             let (ty, scanner) = parse_type(scanner)?;
             Ok((InstructionSpecifier::Add(ty), scanner))
         }
+        Token::Sub => {
+            let (ty, scanner) = parse_type(scanner)?;
+            Ok((InstructionSpecifier::Sub(ty), scanner))
+        }
+        Token::Or => {
+            let (ty, scanner) = parse_type(scanner)?;
+            Ok((InstructionSpecifier::Or(ty), scanner))
+        }
+        Token::And => {
+            let (ty, scanner) = parse_type(scanner)?;
+            Ok((InstructionSpecifier::And(ty), scanner))
+        }
         Token::Mul => {
-            let (mode, scanner) = parse_mode(scanner)?;
+            let (mode, scanner) = parse_mul_mode(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
             Ok((InstructionSpecifier::Multiply(mode, ty), scanner))
         }
         Token::MultiplyAdd => {
-            let (mode, scanner) = parse_mode(scanner)?;
+            let (mode, scanner) = parse_mul_mode(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
             Ok((InstructionSpecifier::MultiplyAdd(mode, ty), scanner))
+        }
+        Token::FusedMulAdd => {
+            let (mode, scanner) = parse_rounding_mode(scanner)?;
+            let (ty, scanner) = parse_type(scanner)?;
+            Ok((InstructionSpecifier::FusedMulAdd(mode, ty), scanner))
+        }
+        Token::Negate => {
+            let (ty, scanner) = parse_type(scanner)?;
+            Ok((InstructionSpecifier::Negate(ty), scanner))
         }
         Token::Convert => {
             let (to, scanner) = parse_type(scanner)?;
@@ -936,7 +1058,8 @@ fn parse_operand(mut scanner: Scanner) -> ParseResult<Operand> {
     // then fall back to other options
     let operand = match scanner.must_pop()? {
         Token::IntegerConst(i) => Operand::Immediate(Immediate::Integer(*i)),
-        Token::Float64Const(f) => Operand::Immediate(Immediate::Float(*f)),
+        Token::Float64Const(f) => Operand::Immediate(Immediate::Float64(*f)),
+        Token::Float32Const(f) => Operand::Immediate(Immediate::Float32(*f)),
         Token::Identifier(s) => {
             if let Some(Token::LeftBracket) = scanner.get() {
                 // array syntax
@@ -1022,6 +1145,10 @@ fn parse_directive(scanner: Scanner) -> ParseResult<Directive> {
         Token::Function | Token::Visible | Token::Entry => {
             let (function, scanner) = parse_function(scanner)?;
             (Directive::Function(function), scanner)
+        }
+        Token::Pragma => {
+            let (pragma, scanner) = parse_pragma(scanner)?;
+            (Directive::Pragma(pragma), scanner)
         }
         _ => {
             let (var, scanner) = parse_variable(scanner)?;
@@ -1234,6 +1361,12 @@ mod test {
     #[test]
     fn test_parse_test() {
         let contents = std::fs::read_to_string("kernels/test.ptx").unwrap();
+        let _ = parse_program(&contents).unwrap();
+    }
+
+    #[test]
+    fn test_parse_gemm() {
+        let contents = std::fs::read_to_string("kernels/gemm.ptx").unwrap();
         let _ = parse_program(&contents).unwrap();
     }
 }

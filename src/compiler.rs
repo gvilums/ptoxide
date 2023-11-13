@@ -82,9 +82,10 @@ impl CompiledModule {
     ) -> Result<(), CompilationError> {
         use ast::Directive;
         match directive {
-            Directive::VarDecl(_) => todo!(),
             Directive::Version(_) => Ok(()),
             Directive::Target(_) => Ok(()),
+            Directive::Pragma(_) => Ok(()),
+            Directive::VarDecl(_) => todo!(),
             Directive::AddressSize(a) => match a {
                 ast::AddressSize::Adr64 => Ok(()),
                 _ => todo!(),
@@ -560,6 +561,7 @@ impl<'a> FuncCodegenState<'a> {
                 });
             }
             Return => self.instructions.push(vm::Instruction::Return),
+            _ => todo!()
         };
         Ok(())
     }
