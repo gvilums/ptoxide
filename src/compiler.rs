@@ -297,7 +297,7 @@ impl<'a> FuncCodegenState<'a> {
 
     fn get_dst_reg(
         &mut self,
-        ty: ast::Type,
+        _ty: ast::Type,
         op: &ast::Operand,
     ) -> Result<vm::RegOperand, CompilationError> {
         use ast::Operand;
@@ -393,10 +393,8 @@ impl<'a> FuncCodegenState<'a> {
     }
 
     fn handle_instruction(&mut self, instr: ast::Instruction) -> Result<(), CompilationError> {
-        use ast::AddressOperand;
-        use ast::Operation::*;
+        use ast::Operation;
         use ast::Operand;
-        use vm::AddrOperand;
 
         if let Some(guard) = instr.guard {
             let (ident, expected) = match guard {
@@ -409,7 +407,7 @@ impl<'a> FuncCodegenState<'a> {
         }
 
         match instr.specifier {
-            Load(st, ty) => {
+            Operation::Load(st, _ty) => {
                 let [Operand::Variable(ident), Operand::Address(addr_op)] =
                     instr.operands.as_slice()
                 else {
@@ -426,7 +424,7 @@ impl<'a> FuncCodegenState<'a> {
                     src_op,
                 ))
             }
-            Store(st, ty) => {
+            Operation::Store(st, _ty) => {
                 let [Operand::Address(addr_op), Operand::Variable(ident)] =
                     instr.operands.as_slice()
                 else {
@@ -443,7 +441,7 @@ impl<'a> FuncCodegenState<'a> {
                     dst_op,
                 ))
             }
-            Move(ty) => {
+            Operation::Move(ty) => {
                 let [dst, src] = instr.operands.as_slice() else {
                     todo!()
                 };
@@ -478,45 +476,45 @@ impl<'a> FuncCodegenState<'a> {
                 self.instructions
                     .push(vm::Instruction::Move(ty, dst_reg, src_reg));
             }
-            Add(ty) => {
+            Operation::Add(ty) => {
                 let [dst_reg, lhs_reg, rhs_reg] =
                     self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::Add(ty, dst_reg, lhs_reg, rhs_reg));
             }
-            Multiply(mode, ty) => {
+            Operation::Multiply(mode, ty) => {
                 let [dst_reg, lhs_reg, rhs_reg] =
                     self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::Mul(ty, mode, dst_reg, lhs_reg, rhs_reg));
             }
-            MultiplyAdd(mode, ty) => {
+            Operation::MultiplyAdd(mode, ty) => {
                 let [dst, a, b, c] = self.reg_dst_3src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Mul(ty, mode, dst, a, b));
                 self.instructions.push(vm::Instruction::Add(ty, dst, dst, c));
             }
-            Sub(ty) => {
+            Operation::Sub(ty) => {
                 let [dst, a, b] = self.reg_dst_2src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Sub(ty, dst, a, b))
             },
-            Or(ty) => {
+            Operation::Or(ty) => {
                 let [dst, a, b] = self.reg_dst_2src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Or(ty, dst, a, b))
             },
-            And(ty) => {
+            Operation::And(ty) => {
                 let [dst, a, b] = self.reg_dst_2src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::And(ty, dst, a, b))
             },
-            FusedMulAdd(_, ty) => {
+            Operation::FusedMulAdd(_, ty) => {
                 let [dst, a, b, c] = self.reg_dst_3src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Mul(ty, ast::MulMode::Low, dst, a, b));
                 self.instructions.push(vm::Instruction::Add(ty, dst, dst, c));
             },
-            Negate(ty) => {
+            Operation::Negate(ty) => {
                 let [dst, src] = self.reg_dst_1src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Neg(ty, dst, src));
             },
-            Convert { from, to } => {
+            Operation::Convert { from, to } => {
                 let [dst, src] = self.reg_dst_1src(from, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Convert {
                     dst_type: to,
@@ -525,8 +523,9 @@ impl<'a> FuncCodegenState<'a> {
                     src,
                 });
             },
-            ConvertAddress(ty, st) => todo!(),
-            ConvertAddressTo(ty, st) => {
+            Operation::ConvertAddress(_ty, _st) => todo!(),
+            Operation::ConvertAddressTo(ty, _st) => {
+                // TODO handle different state spaces
                 // for now, just move the address register into the destination register
                 let [dst, src] = instr.operands.as_slice() else {
                     todo!();
@@ -536,24 +535,24 @@ impl<'a> FuncCodegenState<'a> {
                 self.instructions
                     .push(vm::Instruction::Move(ty, dst_reg, src_reg));
             }
-            SetPredicate(pred, ty) => {
+            Operation::SetPredicate(pred, ty) => {
                 let (dst, a, b) = self.reg_pred_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::SetPredicate(ty, pred, dst, a, b));
             },
-            ShiftLeft(ty) => {
+            Operation::ShiftLeft(ty) => {
                 let [dst_reg, lhs_reg, rhs_reg] =
                     self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::ShiftLeft(ty, dst_reg, lhs_reg, rhs_reg));
             },
-            Call {
-                uniform,
-                ident,
-                ret_param,
-                params,
+            Operation::Call {
+                uniform: _,
+                ident: _,
+                ret_param: _,
+                params: _,
             } => todo!(),
-            BarrierSync => {
+            Operation::BarrierSync => {
                 match instr.operands.as_slice() {
                     [idx] => {
                         let src_reg = self.get_src_reg(ast::Type::U32, idx)?;
@@ -562,13 +561,13 @@ impl<'a> FuncCodegenState<'a> {
                             cnt: None,
                         })
                     },
-                    [idx, cnt] => {
+                    [_idx, _cnt] => {
                         todo!()
                     }
                     _ => todo!()
                 }
             }
-            Branch => {
+            Operation::Branch => {
                 let [Operand::Variable(ident)] = instr.operands.as_slice() else {
                     todo!()
                 };
@@ -578,7 +577,7 @@ impl<'a> FuncCodegenState<'a> {
                     offset: jump_idx as isize,
                 });
             }
-            Return => self.instructions.push(vm::Instruction::Return),
+            Operation::Return => self.instructions.push(vm::Instruction::Return),
         };
         Ok(())
     }
