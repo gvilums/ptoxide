@@ -4,7 +4,6 @@ mod ast;
 
 pub use vm::{Context, Argument, LaunchParams};
 
-use pest::Parser;
 use pest_derive::Parser;
 
 #[derive(Parser)]
@@ -12,7 +11,8 @@ use pest_derive::Parser;
 struct MyParser;
 
 #[test]
-fn test(){
+fn parser(){
+    use pest::Parser;
     let res = MyParser::parse(Rule::ident_list, "a1 b2").unwrap();
     for pair in res {
         println!("Rule:    {:?}", pair.as_rule());

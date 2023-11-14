@@ -21,6 +21,8 @@ pub enum CompilationError {
     InvalidStateSpace,
     #[error("invalid operand: {0:?}")]
     InvalidOperand(ast::Operand),
+    #[error("missing operand")]
+    MissingOperand,
     #[error("invalid immediate type")]
     InvalidImmediateType,
     #[error("invalid register type: {0:?}")]
@@ -115,6 +117,18 @@ fn resolve_state_space(st: ast::StateSpace) -> Result<vm::StateSpace, Compilatio
         Local | Parameter => Ok(vm::StateSpace::Stack),
         Register => Err(CompilationError::InvalidStateSpace),
     }
+}
+
+fn get_ops<const N: usize>(ops: Vec<ast::Operand>) -> Result<[ast::Operand; N], CompilationError> {
+    if ops.len() != N {
+        return Err(CompilationError::MissingOperand);
+    }
+    const VAL: ast::Operand = ast::Operand::Variable(String::new());
+    let mut arr = [VAL; N];
+    for (i, op) in ops.into_iter().enumerate() {
+        arr[i] = op;
+    }
+    Ok(arr)
 }
 
 struct FuncCodegenState<'a> {
@@ -428,13 +442,15 @@ impl<'a> FuncCodegenState<'a> {
 
         match instr.specifier {
             Operation::Load(st, _ty) => {
-                let [Operand::Variable(ident), Operand::Address(addr_op)] =
-                    instr.operands.as_slice()
-                else {
-                    todo!()
+                let [dst, src] = get_ops(instr.operands)?;
+                let Operand::Variable(ident) = dst else {
+                    return Err(CompilationError::InvalidOperand(dst));
                 };
-                let dst_reg = self.var_map.get_reg(ident)?;
-                let src_op = self.resolve_addr_operand(addr_op)?;
+                let Operand::Address(addr_op) = src else {
+                    return Err(CompilationError::InvalidOperand(src));
+                };
+                let dst_reg = self.var_map.get_reg(&ident)?;
+                let src_op = self.resolve_addr_operand(&addr_op)?;
                 self.instructions.push(vm::Instruction::Load(
                     resolve_state_space(st)?,
                     dst_reg,
@@ -442,13 +458,15 @@ impl<'a> FuncCodegenState<'a> {
                 ))
             }
             Operation::Store(st, _ty) => {
-                let [Operand::Address(addr_op), Operand::Variable(ident)] =
-                    instr.operands.as_slice()
-                else {
-                    todo!()
+                let [dst, src] = get_ops(instr.operands)?;
+                let Operand::Address(addr_op) = dst else {
+                    return Err(CompilationError::InvalidOperand(dst));
                 };
-                let src_reg = self.var_map.get_reg(ident)?;
-                let dst_op = self.resolve_addr_operand(addr_op)?;
+                let Operand::Variable(ident) = src else {
+                    return Err(CompilationError::InvalidOperand(src));
+                };
+                let src_reg = self.var_map.get_reg(&ident)?;
+                let dst_op = self.resolve_addr_operand(&addr_op)?;
                 self.instructions.push(vm::Instruction::Store(
                     resolve_state_space(st)?,
                     src_reg,
@@ -456,13 +474,11 @@ impl<'a> FuncCodegenState<'a> {
                 ))
             }
             Operation::Move(ty) => {
-                let [dst, src] = instr.operands.as_slice() else {
-                    todo!()
-                };
-                let dst_reg = self.get_dst_reg(ty, dst)?;
+                let [dst, src] = get_ops(instr.operands)?;
+                let dst_reg = self.get_dst_reg(ty, &dst)?;
                 let src_reg = match src {
                     Operand::Variable(ident) => {
-                        match self.var_map.get(ident).cloned().ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
+                        match self.var_map.get(&ident).cloned().ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
                             Variable::Register(reg) => reg,
                             // this is an LEA operation, not just a normal mov 
                             Variable::Stack(offset) => {
@@ -477,9 +493,9 @@ impl<'a> FuncCodegenState<'a> {
                             }
                         }
                     },
-                    Operand::Immediate(imm) => self.construct_immediate(ty, *imm)?,
-                    Operand::SpecialReg(special) => vm::RegOperand::Special(*special),
-                    Operand::Address(_) => todo!(),
+                    Operand::Immediate(imm) => self.construct_immediate(ty, imm)?,
+                    Operand::SpecialReg(special) => vm::RegOperand::Special(special),
+                    op @ Operand::Address(_) => return Err(CompilationError::InvalidOperand(op.clone())),
                 };
                 self.instructions
                     .push(vm::Instruction::Move(ty, dst_reg, src_reg));

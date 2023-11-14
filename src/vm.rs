@@ -389,17 +389,6 @@ impl ThreadState {
         self.iptr = desc.iptr;
     }
 
-    fn read_reg_signed(&self, reg: RegOperand) -> VmResult<isize> {
-        match reg {
-            RegOperand::Pred(_) | RegOperand::Special(_) => Err(VmError::InvalidAddressOperandRegister(reg)),
-            RegOperand::B8(r) => Ok(self.get_i8(r) as isize),
-            RegOperand::B16(r) => Ok(self.get_i16(r) as isize),
-            RegOperand::B32(r) => Ok(self.get_i32(r) as isize),
-            RegOperand::B64(r) => Ok(self.get_i64(r) as isize),
-            RegOperand::B128(r) => Ok(self.get_i128(r) as isize),
-        }
-    }
-
     fn read_reg_unsigned(&self, reg: RegOperand) -> VmResult<usize> {
         match reg {
             RegOperand::Pred(_) | RegOperand::Special(_) => Err(VmError::InvalidAddressOperandRegister(reg)),
