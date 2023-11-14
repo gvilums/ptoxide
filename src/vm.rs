@@ -120,7 +120,6 @@ struct ThreadState {
     ctaid: (u32, u32, u32),
     ntid: (u32, u32, u32),
     tid: (u32, u32, u32),
-    // function_args: Vec<isize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -154,29 +153,28 @@ macro_rules! byte_reg_funcs {
     };
 }
 
-macro_rules! int_reg_funcs {
-    ($($get:ident, $set:ident, $t2:ty);* $(;)?) => {
+macro_rules! int_getters {
+    ($($get:ident, $t2:ty);* $(;)?) => {
         $(
-            #[allow(dead_code)]
             fn $get(&self, reg: RegOperand) -> $t2 {
                 match reg {
                     RegOperand::Generic(reg) => self.regs.last().unwrap()[reg.0] as $t2,
                     RegOperand::Special(reg) => self.get_special(reg) as $t2,
                 }
             }
+        )*
+    };
+}
 
-            #[allow(dead_code)]
+macro_rules! int_setters {
+    ($($set:ident, $t2:ty);* $(;)?) => {
+        $(
             fn $set(&mut self, reg: GenericReg, value: $t2) {
                 self.regs.last_mut().unwrap()[reg.0] = value as u128;
             }
         )*
     };
 }
-
-/*
-
-
-*/
 
 impl ThreadState {
     fn new(
@@ -233,25 +231,38 @@ impl ThreadState {
     }
 
     byte_reg_funcs!(
-        get_b8, set_b8, get_u8, u8, 1;
-        get_b16, set_b16, get_u16, u16, 2;
-        get_b32, set_b32, get_u32, u32, 4;
-        get_b64, set_b64, get_u64, u64, 8;
+        // get_b8, set_b8, get_u8, u8, 1;
+        // get_b16, set_b16, get_u16, u16, 2;
+        // get_b32, set_b32, get_u32, u32, 4;
+        // get_b64, set_b64, get_u64, u64, 8;
         get_b128, set_b128, get_u128, u128, 16;
     );
 
-    int_reg_funcs!(
-        get_u8, set_u8, u8;
-        get_u16, set_u16, u16;
-        get_u32, set_u32, u32;
-        get_u64, set_u64, u64;
-        get_u128, set_u128, u128;
+    int_getters!(
+        // get_u8, u8;
+        get_u16, u16;
+        get_u32, u32;
+        get_u64, u64;
+        get_u128, u128;
 
-        get_i8, set_i8, i8;
-        get_i16, set_i16, i16;
-        get_i32, set_i32, i32;
-        get_i64, set_i64, i64;
-        get_i128, set_i128, i128;
+        // get_i8, i8;
+        // get_i16, i16;
+        get_i32, i32;
+        get_i64, i64;
+        // get_i128, i128;
+    );
+    int_setters!(
+        set_u8, u8;
+        set_u16, u16;
+        set_u32, u32;
+        set_u64, u64;
+        set_u128, u128;
+
+        set_i8, i8;
+        set_i16, i16;
+        set_i32, i32;
+        set_i64, i64;
+        // set_i128, i128;
     );
 
     fn iptr_fetch_incr(&mut self) -> IPtr {
@@ -419,7 +430,7 @@ impl Barriers {
         }
     }
 
-    pub fn arrive(&mut self, idx: usize, target: usize) -> VmResult<Vec<ThreadState>> {
+    pub fn arrive(&mut self, _idx: usize, _target: usize) -> VmResult<Vec<ThreadState>> {
         todo!()
     }
 
@@ -484,13 +495,37 @@ macro_rules! unary_op {
     };
 }
 
+macro_rules! comparison_op {
+    ($threadop:expr, $tyop:expr, $op:expr, $dstop:expr, $aop:expr, $bop:expr;
+        $($target_ty:pat, $getter:ident);*$(;)?) => {
+        match ($tyop) {
+        $(
+            $target_ty => {
+                let a = $threadop.$getter($aop);
+                let b = $threadop.$getter($bop);
+                let value = match $op {
+                    PredicateOp::LessThan => a < b,
+                    PredicateOp::LessThanEqual => a <= b,
+                    PredicateOp::Equal => a == b,
+                    PredicateOp::NotEqual => a != b,
+                    PredicateOp::GreaterThan => a > b,
+                    PredicateOp::GreaterThanEqual => a >= b,
+                };
+                $threadop.set_pred($dstop, value);
+            }
+        )*
+            _ => todo!()
+        }
+    };
+}
+
 impl Context {
     fn fetch_instr(&self, iptr: IPtr) -> Instruction {
         self.instructions[iptr.0]
     }
 
     #[cfg(test)]
-    fn new_raw(program: Vec<Instruction>, descriptors: Vec<FuncFrameDesc>) -> Context {
+    fn _new_raw(program: Vec<Instruction>, descriptors: Vec<FuncFrameDesc>) -> Context {
         Context {
             global_mem: Vec::new(),
             instructions: program,
@@ -544,19 +579,6 @@ impl Context {
         let begin = ptr.0 as usize + offset;
         let end = begin + data.len();
         data.copy_from_slice(&self.global_mem[begin..end]);
-    }
-
-    fn get_data_ptr<'a>(
-        &'a mut self,
-        space: StateSpace,
-        state: &'a mut ThreadState,
-        shared: &'a mut [u8],
-    ) -> &'a mut [u8] {
-        match space {
-            StateSpace::Global => self.global_mem.as_mut_slice(),
-            StateSpace::Stack => state.stack_data.as_mut_slice(),
-            StateSpace::Shared => shared,
-        }
     }
 
     fn run_cta(
@@ -613,53 +635,27 @@ impl Context {
         let inst = self.fetch_instr(thread.iptr_fetch_incr());
         match inst {
             Instruction::Load(ty, space, dst, addr) => {
-                // let addr = thread.resolve_address(addr)?;
                 let addr = thread.read_reg_unsigned(addr)?;
+                let mut buf = [0u8; 16];
                 let data = match space {
                     StateSpace::Global => self.global_mem.as_slice(),
                     StateSpace::Stack => thread.stack_data.as_slice(),
                     StateSpace::Shared => shared_mem,
                 };
-                match ty.size() {
-                    1 => thread.set_b8(dst, data[addr..addr + 1].try_into()?),
-                    2 => thread.set_b16(dst, data[addr..addr + 2].try_into()?),
-                    4 => thread.set_b32(dst, data[addr..addr + 4].try_into()?),
-                    8 => thread.set_b64(dst, data[addr..addr + 8].try_into()?),
-                    16 => thread.set_b128(dst, data[addr..addr + 16].try_into()?),
-                    o => panic!("inernal error: invalid type size: {o}"),
-                }
+                let size = ty.size();
+                buf[..size].copy_from_slice(&data[addr..addr + size]);
+                thread.set_b128(dst, buf);
             }
             Instruction::Store(ty, space, src, addr) => {
-                // let addr = thread.resolve_address(addr)?;
                 let addr = thread.read_reg_unsigned(addr)?;
-                match ty.size() {
-                    1 => {
-                        let val = thread.get_b8(src);
-                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 1]
-                            .copy_from_slice(&val);
-                    }
-                    2 => {
-                        let val = thread.get_b16(src);
-                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 2]
-                            .copy_from_slice(&val);
-                    }
-                    4 => {
-                        let val = thread.get_b32(src);
-                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 4]
-                            .copy_from_slice(&val);
-                    }
-                    8 => {
-                        let val = thread.get_b64(src);
-                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 8]
-                            .copy_from_slice(&val);
-                    }
-                    16 => {
-                        let val = thread.get_b128(src);
-                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 16]
-                            .copy_from_slice(&val);
-                    }
-                    o => panic!("inernal error: invalid type size: {o}"),
-                }
+                let buf = thread.get_b128(src);
+                let data = match space {
+                    StateSpace::Global => self.global_mem.as_mut_slice(),
+                    StateSpace::Stack => thread.stack_data.as_mut_slice(),
+                    StateSpace::Shared => shared_mem,
+                };
+                let size = ty.size();
+                data[addr..addr + size].copy_from_slice(&buf[..size]);
             }
             Instruction::Sub(ty, dst, a, b) => {
                 use std::ops::Sub;
@@ -726,7 +722,7 @@ impl Context {
                     thread, ty, dst, a, b;
                     Type::Pred, bitand, get_pred, set_pred;
                     Type::U64 | Type::B64 | Type::S64, bitand, get_u64, set_u64;
-                    Type::U32 | Type::B32 | Type::S64, bitand, get_u32, set_u32;
+                    Type::U32 | Type::B32 | Type::S32, bitand, get_u32, set_u32;
                 };
             }
             Instruction::Neg(ty, dst, src) => {
@@ -761,48 +757,36 @@ impl Context {
             Instruction::Move(_, dst, src) => {
                 thread.set(dst, thread.get(src));
             }
-            Instruction::Const(dst, value) => {
-                match value {
-                    Constant::U64(value) => thread.set_u64(dst, value),
-                    Constant::S64(value) => thread.set_i64(dst, value),
-                    Constant::U32(value) => thread.set_u32(dst, value),
-                    Constant::S32(value) => thread.set_i32(dst, value),
-                    Constant::F32(value) => thread.set_f32(dst, value),
-
-                    // temporary fix for operations that move address of local into register
-                    Constant::U64(value) => thread.set_u32(dst, value as u32),
-                    _ => todo!(),
-                }
-            }
-            Instruction::SetPredicate(ty, op, dst, a, b) => match ty {
-                Type::U64 => {
-                    let a = thread.get_u64(a);
-                    let b = thread.get_u64(b);
-                    let value = match op {
-                        PredicateOp::LessThan => a < b,
-                        PredicateOp::LessThanEqual => a <= b,
-                        PredicateOp::Equal => a == b,
-                        PredicateOp::NotEqual => a != b,
-                        PredicateOp::GreaterThan => a > b,
-                        PredicateOp::GreaterThanEqual => a >= b,
-                    };
-                    thread.set_pred(dst, value);
-                }
-                Type::S64 => {
-                    let a = thread.get_i64(a);
-                    let b = thread.get_i64(b);
-                    let value = match op {
-                        PredicateOp::LessThan => a < b,
-                        PredicateOp::LessThanEqual => a <= b,
-                        PredicateOp::Equal => a == b,
-                        PredicateOp::NotEqual => a != b,
-                        PredicateOp::GreaterThan => a > b,
-                        PredicateOp::GreaterThanEqual => a >= b,
-                    };
-                    thread.set_pred(dst, value);
-                }
-                _ => todo!(),
+            Instruction::Const(dst, value) => match value {
+                Constant::U64(value) => thread.set_u64(dst, value),
+                Constant::S64(value) => thread.set_i64(dst, value),
+                Constant::U32(value) => thread.set_u32(dst, value),
+                Constant::S32(value) => thread.set_i32(dst, value),
+                Constant::F32(value) => thread.set_f32(dst, value),
+                Constant::B128(value) => thread.set_u128(dst, value),
+                Constant::B64(value) => thread.set_u64(dst, value),
+                Constant::B32(value) => thread.set_u32(dst, value),
+                Constant::B16(value) => thread.set_u16(dst, value),
+                Constant::B8(value) => thread.set_u8(dst, value),
+                Constant::U16(value) => thread.set_u16(dst, value),
+                Constant::U8(value) => thread.set_u8(dst, value),
+                Constant::S16(value) => thread.set_i16(dst, value),
+                Constant::S8(value) => thread.set_i8(dst, value),
+                Constant::F64(value) => thread.set_f64(dst, value),
+                Constant::Pred(value) => thread.set_pred(dst, value),
+                Constant::F16x2(_, _) => todo!(),
+                Constant::F16(_) => todo!(),
             },
+            Instruction::SetPredicate(ty, op, dst, a, b) => {
+                comparison_op! {
+                    thread, ty, op, dst, a, b;
+                    Type::U64 | Type::B64, get_u64;
+                    Type::S64, get_i64;
+                    Type::U32 | Type::B32, get_u32;
+                    Type::S32, get_i32;
+                    Type::F32, get_f32;
+                };
+            }
             Instruction::BarrierSync { idx, cnt } => {
                 let idx = thread.get_u32(idx) as usize;
                 let cnt = cnt.map(|r| thread.get_u64(r) as usize);

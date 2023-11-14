@@ -471,6 +471,15 @@ pub enum Type {
     Pred,
 }
 
+pub enum TypeSize {
+    One,
+    Two,
+    Four,
+    Eight,
+    Sixteen
+}
+
+
 impl Type {
     pub fn size(&self) -> usize {
         use Type::*;
@@ -480,20 +489,12 @@ impl Type {
             B32 | U32 | S32 | F32 | F16x2 => 4,
             B16 | U16 | S16 | F16 => 2,
             B8 | U8 | S8 => 1,
-            Pred => 0,
+            Pred => 1,
         }
     }
 
     pub fn alignment(&self) -> usize {
-        use Type::*;
-        match self {
-            Pred => 1,
-            t => t.size(),
-        }
-    }
-
-    pub fn to_vm(&self) -> Self {
-        *self
+        self.size()
     }
 }
 
