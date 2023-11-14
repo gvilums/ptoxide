@@ -33,11 +33,11 @@ pub enum CompilationError {
 struct BasicBlock {
     label: Option<String>,
     instructions: Vec<ast::Instruction>,
-} 
+}
 
 #[derive(Clone, Copy, Debug)]
 enum Variable {
-    Register(vm::RegOperand),
+    Register(vm::GenericReg),
     Absolute(usize),
     Stack(isize),
 }
@@ -56,18 +56,7 @@ impl VariableMap {
         self.0.get(ident)
     }
 
-    pub fn get_pred(&self, ident: &str) -> Result<vm::RegPred, CompilationError> {
-        match self.0.get(ident) {
-            Some(Variable::Register(reg)) => match reg {
-                vm::RegOperand::Pred(pred) => Ok(*pred),
-                _ => Err(CompilationError::InvalidRegisterType(*reg)),
-            },
-            Some(_) => Err(CompilationError::InvalidStateSpace),
-            _ => Err(CompilationError::UndefinedSymbol(ident.to_string())),
-        }
-    }
-
-    pub fn get_reg(&self, ident: &str) -> Result<vm::RegOperand, CompilationError> {
+    pub fn get_reg(&self, ident: &str) -> Result<vm::GenericReg, CompilationError> {
         match self.0.get(ident) {
             Some(Variable::Register(reg)) => Ok(*reg),
             Some(_) => Err(CompilationError::InvalidStateSpace),
@@ -136,7 +125,7 @@ struct FuncCodegenState<'a> {
     ident: String,
     instructions: Vec<vm::Instruction>,
     var_map: VariableMap,
-    regs: vm::RegDesc,
+    num_regs: usize,
     stack_size: usize,
     shared_size: usize,
     param_stack_offset: usize,
@@ -151,7 +140,7 @@ impl<'a> FuncCodegenState<'a> {
             ident: String::new(),
             instructions: Vec::new(),
             var_map: VariableMap::new(),
-            regs: vm::RegDesc::default(),
+            num_regs: 0,
             stack_size: 0,
             param_stack_offset: 0,
             shared_size: 0,
@@ -160,9 +149,14 @@ impl<'a> FuncCodegenState<'a> {
         }
     }
 
+    fn alloc_reg(&mut self) -> vm::GenericReg {
+        let idx = self.num_regs;
+        self.num_regs += 1;
+        vm::GenericReg(idx)
+    }
+
     fn declare_var(&mut self, decl: ast::VarDecl) -> Result<(), CompilationError> {
         use ast::StateSpace;
-        use vm::RegOperand;
         if let ast::Type::Pred = decl.ty {
             // predicates can only exist in the reg state space
             if decl.state_space != StateSpace::Register {
@@ -174,16 +168,8 @@ impl<'a> FuncCodegenState<'a> {
                 if !decl.array_bounds.is_empty() {
                     todo!("array bounds not supported on register variables")
                 }
-                use ast::Type::*;
-                let opref = match decl.ty {
-                    B128 => RegOperand::B128(self.regs.alloc_b128()),
-                    B64 | U64 | S64 | F64 => RegOperand::B64(self.regs.alloc_b64()),
-                    B32 | U32 | S32 | F32 | F16x2 => RegOperand::B32(self.regs.alloc_b32()),
-                    B16 | U16 | S16 | F16 => RegOperand::B16(self.regs.alloc_b16()),
-                    B8 | U8 | S8 => RegOperand::B8(self.regs.alloc_b8()),
-                    Pred => RegOperand::Pred(self.regs.alloc_pred()),
-                };
-                self.var_map.insert(decl.ident, Variable::Register(opref));
+                let reg = self.alloc_reg();
+                self.var_map.insert(decl.ident, Variable::Register(reg));
             }
             StateSpace::Shared => {
                 let count = decl.array_bounds.iter().product::<u32>();
@@ -194,9 +180,8 @@ impl<'a> FuncCodegenState<'a> {
                 self.shared_size = (self.shared_size + align - 1) & !(align - 1);
                 let loc = Variable::Absolute(self.shared_size);
                 self.shared_size += size;
-                self.var_map
-                    .insert(decl.ident, loc);
-            },
+                self.var_map.insert(decl.ident, loc);
+            }
             StateSpace::Global => todo!(),
             StateSpace::Local => todo!(),
             StateSpace::Constant => todo!(),
@@ -241,8 +226,7 @@ impl<'a> FuncCodegenState<'a> {
 
             let loc = Variable::Stack(-(self.param_stack_offset as isize));
 
-            self.var_map
-                .insert(param.ident.clone(), loc);
+            self.var_map.insert(param.ident.clone(), loc);
         }
         Ok(())
     }
@@ -251,57 +235,16 @@ impl<'a> FuncCodegenState<'a> {
         &mut self,
         ty: ast::Type,
         imm: ast::Immediate,
-    ) -> Result<vm::RegOperand, CompilationError> {
-        use ast::Type::*;
-        use vm::RegOperand;
-        let opref = match ty {
-            U32 | B32 => {
-                let reg = RegOperand::B32(self.regs.alloc_b32());
-                let ast::Immediate::Int64(val) = imm else {
-                    return Err(CompilationError::InvalidImmediateType);
-                };
-                self.instructions
-                    .push(vm::Instruction::Const(reg, vm::Constant::U32(val as u32)));
-                reg
-            }
-            S32 => {
-                let reg = RegOperand::B32(self.regs.alloc_b32());
-                let ast::Immediate::Int64(val) = imm else {
-                    return Err(CompilationError::InvalidImmediateType);
-                };
-                self.instructions
-                    .push(vm::Instruction::Const(reg, vm::Constant::S32(val as i32)));
-                reg
-            }
-            U64 | B64 => {
-                let reg = RegOperand::B64(self.regs.alloc_b64());
-                let ast::Immediate::Int64(val) = imm else {
-                    return Err(CompilationError::InvalidImmediateType);
-                };
-                self.instructions
-                    .push(vm::Instruction::Const(reg, vm::Constant::U64(val as u64)));
-                reg
-            }
-            S64 => {
-                let reg = RegOperand::B64(self.regs.alloc_b64());
-                let ast::Immediate::Int64(val) = imm else {
-                    return Err(CompilationError::InvalidImmediateType);
-                };
-                self.instructions
-                    .push(vm::Instruction::Const(reg, vm::Constant::S64(val as i64)));
-                reg
-            }
-            F32 => {
-                let reg = RegOperand::B32(self.regs.alloc_b32());
-                let ast::Immediate::Float32(val) = imm else {
-                    return Err(CompilationError::InvalidImmediateType);
-                };
-                self.instructions
-                    .push(vm::Instruction::Const(reg, vm::Constant::F32(val as f32)));
-                reg
-            }
-            _ => todo!(),
+    ) -> Result<vm::GenericReg, CompilationError> {
+        let vmconst = match imm {
+            ast::Immediate::Float32(v) => vm::Constant::F32(v),
+            ast::Immediate::Float64(v) => vm::Constant::F64(v),
+            ast::Immediate::Int64(v) => vm::Constant::S64(v),
+            ast::Immediate::UInt64(v) => vm::Constant::U64(v),
         };
+        let opref = self.alloc_reg();
+        self.instructions
+            .push(vm::Instruction::Const(opref, vmconst));
         Ok(opref)
     }
 
@@ -312,9 +255,14 @@ impl<'a> FuncCodegenState<'a> {
     ) -> Result<vm::RegOperand, CompilationError> {
         use ast::Operand;
         match op {
-            Operand::Variable(ident) => self.var_map.get_reg(ident),
-            Operand::Immediate(imm) => self.construct_immediate(ty, *imm),
-            Operand::SpecialReg(special) => Ok(vm::RegOperand::Special(*special)),
+            Operand::Variable(ident) => self
+                .var_map
+                .get_reg(ident)
+                .map(|r| r.into()),
+            Operand::Immediate(imm) => self
+                .construct_immediate(ty, *imm)
+                .map(|r| r.into()),
+            Operand::SpecialReg(special) => Ok((*special).into()),
             Operand::Address(_) => todo!(),
         }
     }
@@ -323,7 +271,7 @@ impl<'a> FuncCodegenState<'a> {
         &mut self,
         _ty: ast::Type,
         op: &ast::Operand,
-    ) -> Result<vm::RegOperand, CompilationError> {
+    ) -> Result<vm::GenericReg, CompilationError> {
         use ast::Operand;
         match op {
             Operand::Variable(ident) => self.var_map.get_reg(ident),
@@ -331,46 +279,42 @@ impl<'a> FuncCodegenState<'a> {
         }
     }
 
-    fn reg_pred_2src(
-        &mut self,
-        ty: ast::Type,
-        ops: &[ast::Operand],
-    ) -> Result<(vm::RegPred, vm::RegOperand, vm::RegOperand), CompilationError> {
-        let [ast::Operand::Variable(dst), lhs_op, rhs_op] = ops else { todo!() };
-        let dst_reg = self.var_map.get_pred(dst)?;
-        let lhs_reg = self.get_src_reg(ty, lhs_op)?;
-        let rhs_reg = self.get_src_reg(ty, rhs_op)?;
-        Ok((dst_reg, lhs_reg, rhs_reg))
-    }
-
     fn reg_dst_1src(
         &mut self,
         ty: ast::Type,
         ops: &[ast::Operand],
-    ) -> Result<[vm::RegOperand; 2], CompilationError> {
-        let [dst, src ] = ops else { todo!() };
+    ) -> Result<(vm::GenericReg, vm::RegOperand), CompilationError> {
+        let [dst, src] = ops else { todo!() };
         let dst_reg = self.get_dst_reg(ty, dst)?;
         let src_reg = self.get_src_reg(ty, src)?;
-        Ok([dst_reg, src_reg])
+        Ok((dst_reg, src_reg))
     }
 
     fn reg_dst_2src(
         &mut self,
         ty: ast::Type,
         ops: &[ast::Operand],
-    ) -> Result<[vm::RegOperand; 3], CompilationError> {
+    ) -> Result<(vm::GenericReg, vm::RegOperand, vm::RegOperand), CompilationError> {
         let [dst, lhs_op, rhs_op] = ops else { todo!() };
         let dst_reg = self.get_dst_reg(ty, dst)?;
         let lhs_reg = self.get_src_reg(ty, lhs_op)?;
         let rhs_reg = self.get_src_reg(ty, rhs_op)?;
-        Ok([dst_reg, lhs_reg, rhs_reg])
+        Ok((dst_reg, lhs_reg, rhs_reg))
     }
 
     fn reg_dst_3src(
         &mut self,
         ty: ast::Type,
         ops: &[ast::Operand],
-    ) -> Result<[vm::RegOperand; 4], CompilationError> {
+    ) -> Result<
+        (
+            vm::GenericReg,
+            vm::RegOperand,
+            vm::RegOperand,
+            vm::RegOperand,
+        ),
+        CompilationError,
+    > {
         let [dst, src1_op, src2_op, src3_op] = ops else {
             todo!()
         };
@@ -378,70 +322,103 @@ impl<'a> FuncCodegenState<'a> {
         let src1_reg = self.get_src_reg(ty, src1_op)?;
         let src2_reg = self.get_src_reg(ty, src2_op)?;
         let src3_reg = self.get_src_reg(ty, src3_op)?;
-        Ok([dst_reg, src1_reg, src2_reg, src3_reg])
+        Ok((dst_reg, src1_reg, src2_reg, src3_reg))
     }
 
-    fn resolve_addr_operand(&mut self, operand: &ast::AddressOperand) -> Result<vm::RegOperand, CompilationError> {
+    fn resolve_addr_operand(
+        &mut self,
+        operand: &ast::AddressOperand,
+    ) -> Result<vm::RegOperand, CompilationError> {
         use ast::AddressOperand;
         Ok(match operand {
             AddressOperand::Address(ident) => {
-                match self.var_map.get(ident).cloned().ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
-                    Variable::Register(reg) => {
-                        reg
-                    }
-                    Variable::Absolute(addr) => {
-                        self.construct_immediate(ast::Type::U64, ast::Immediate::UInt64(addr as u64))?
-                    }
+                match self
+                    .var_map
+                    .get(ident)
+                    .cloned()
+                    .ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))?
+                {
+                    Variable::Register(reg) => reg.into(),
+                    Variable::Absolute(addr) => self
+                        .construct_immediate(ast::Type::U64, ast::Immediate::UInt64(addr as u64))?
+                        .into(),
                     Variable::Stack(addr) => {
-                        let dst = vm::RegOperand::B64(self.regs.alloc_b64());
-                        let imm = self.construct_immediate(ast::Type::S64, ast::Immediate::Int64(addr as i64))?;
-                        self.instructions.push(vm::Instruction::Move(ast::Type::U64, dst, vm::RegOperand::Special(ast::SpecialReg::StackPtr)));
-                        self.instructions.push(vm::Instruction::Add(ast::Type::S64, dst, dst, imm));
-                        dst
+                        let dst = self.construct_immediate(
+                            ast::Type::S64,
+                            ast::Immediate::Int64(addr as i64),
+                        )?;
+                        self.instructions.push(vm::Instruction::Add(
+                            ast::Type::S64,
+                            dst,
+                            dst.into(),
+                            ast::SpecialReg::StackPtr.into(),
+                        ));
+                        dst.into()
                     }
                 }
-            },
+            }
             AddressOperand::AddressOffset(ident, offset) => {
-                match self.var_map.get(ident).cloned().ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
+                match self
+                    .var_map
+                    .get(ident)
+                    .cloned()
+                    .ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))?
+                {
                     Variable::Register(reg) => {
-                        let dst = vm::RegOperand::B64(self.regs.alloc_b64());
-                        let imm = self.construct_immediate(ast::Type::S64, ast::Immediate::Int64(*offset))?;
-                        self.instructions.push(vm::Instruction::Add(ast::Type::S64, dst, reg, imm));
-                        dst
+                        let imm = self
+                            .construct_immediate(ast::Type::S64, ast::Immediate::Int64(*offset))?;
+                        self.instructions.push(vm::Instruction::Add(
+                            ast::Type::S64,
+                            imm,
+                            imm.into(),
+                            reg.into(),
+                        ));
+                        imm.into()
                     }
-                    Variable::Absolute(addr) => {
-                        self.construct_immediate(ast::Type::U64, ast::Immediate::UInt64(addr as u64 + *offset as u64))?
-                    }
+                    Variable::Absolute(addr) => self
+                        .construct_immediate(
+                            ast::Type::U64,
+                            ast::Immediate::UInt64(addr as u64 + *offset as u64),
+                        )?
+                        .into(),
                     Variable::Stack(addr) => {
-                        let dst = vm::RegOperand::B64(self.regs.alloc_b64());
-                        let imm = self.construct_immediate(ast::Type::S64, ast::Immediate::Int64(addr as i64 + *offset))?;
-                        self.instructions.push(vm::Instruction::Move(ast::Type::U64, dst, vm::RegOperand::Special(ast::SpecialReg::StackPtr)));
-                        self.instructions.push(vm::Instruction::Add(ast::Type::S64, dst, dst, imm));
-                        dst
+                        let imm = self.construct_immediate(
+                            ast::Type::S64,
+                            ast::Immediate::Int64(addr as i64 + *offset),
+                        )?;
+                        self.instructions.push(vm::Instruction::Add(
+                            ast::Type::S64,
+                            imm,
+                            imm.into(),
+                            ast::SpecialReg::StackPtr.into(),
+                        ));
+                        imm.into()
                     }
                 }
-            },
+            }
             AddressOperand::AddressOffsetVar(_, _) => todo!(),
             AddressOperand::ArrayIndex(_, _) => todo!(),
         })
     }
 
     fn handle_instruction(&mut self, instr: ast::Instruction) -> Result<(), CompilationError> {
-        use ast::Operation;
         use ast::Operand;
+        use ast::Operation;
 
         if let Some(guard) = instr.guard {
             let (ident, expected) = match guard {
                 ast::Guard::Normal(s) => (s, false),
                 ast::Guard::Negated(s) => (s, true),
             };
-            let guard_reg = self.var_map.get_pred(&ident)?;
-            self.instructions
-                .push(vm::Instruction::SkipIf(guard_reg, expected));
+            let guard_reg = self.var_map.get_reg(&ident)?;
+            self.instructions.push(vm::Instruction::SkipIf(
+                guard_reg.into(),
+                expected,
+            ));
         }
 
         match instr.specifier {
-            Operation::Load(st, _ty) => {
+            Operation::Load(st, ty) => {
                 let [dst, src] = get_ops(instr.operands)?;
                 let Operand::Variable(ident) = dst else {
                     return Err(CompilationError::InvalidOperand(dst));
@@ -452,12 +429,13 @@ impl<'a> FuncCodegenState<'a> {
                 let dst_reg = self.var_map.get_reg(&ident)?;
                 let src_op = self.resolve_addr_operand(&addr_op)?;
                 self.instructions.push(vm::Instruction::Load(
+                    ty,
                     resolve_state_space(st)?,
                     dst_reg,
                     src_op,
                 ))
             }
-            Operation::Store(st, _ty) => {
+            Operation::Store(st, ty) => {
                 let [dst, src] = get_ops(instr.operands)?;
                 let Operand::Address(addr_op) = dst else {
                     return Err(CompilationError::InvalidOperand(dst));
@@ -468,129 +446,152 @@ impl<'a> FuncCodegenState<'a> {
                 let src_reg = self.var_map.get_reg(&ident)?;
                 let dst_op = self.resolve_addr_operand(&addr_op)?;
                 self.instructions.push(vm::Instruction::Store(
+                    ty,
                     resolve_state_space(st)?,
-                    src_reg,
+                    src_reg.into(),
                     dst_op,
                 ))
             }
             Operation::Move(ty) => {
                 let [dst, src] = get_ops(instr.operands)?;
                 let dst_reg = self.get_dst_reg(ty, &dst)?;
-                let src_reg = match src {
-                    Operand::Variable(ident) => {
-                        match self.var_map.get(&ident).cloned().ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
-                            Variable::Register(reg) => reg,
-                            // this is an LEA operation, not just a normal mov 
-                            Variable::Stack(offset) => {
-                                let imm = self.construct_immediate(ast::Type::U64, ast::Immediate::UInt64(offset as u64))?;
-                                self.instructions.push(vm::Instruction::Move(ast::Type::U64, dst_reg, vm::RegOperand::Special(ast::SpecialReg::StackPtr)));
-                                self.instructions.push(vm::Instruction::Add(ast::Type::S64, dst_reg, dst_reg, imm));
-                                return Ok(())
-                            }
-                            Variable::Absolute(addr) => {
-                                self.instructions.push(vm::Instruction::Const(dst_reg, vm::Constant::U64(addr as u64)));
-                                return Ok(())
+                let src_reg =
+                    match src {
+                        Operand::Variable(ident) => {
+                            match self.var_map.get(&ident).cloned().ok_or_else(|| {
+                                CompilationError::UndefinedSymbol(ident.to_string())
+                            })? {
+                                Variable::Register(reg) => reg.into(),
+                                // this is an LEA operation, not just a normal mov
+                                Variable::Stack(offset) => {
+                                    let imm = self.construct_immediate(
+                                        ast::Type::U64,
+                                        ast::Immediate::UInt64(offset as u64),
+                                    )?;
+                                    self.instructions.push(vm::Instruction::Add(
+                                        ast::Type::S64,
+                                        dst_reg,
+                                        imm.into(),
+                                        ast::SpecialReg::StackPtr.into(),
+                                    ));
+                                    return Ok(());
+                                }
+                                Variable::Absolute(addr) => {
+                                    self.instructions.push(vm::Instruction::Const(
+                                        dst_reg,
+                                        vm::Constant::U64(addr as u64),
+                                    ));
+                                    return Ok(());
+                                }
                             }
                         }
-                    },
-                    Operand::Immediate(imm) => self.construct_immediate(ty, imm)?,
-                    Operand::SpecialReg(special) => vm::RegOperand::Special(special),
-                    op @ Operand::Address(_) => return Err(CompilationError::InvalidOperand(op.clone())),
-                };
+                        Operand::Immediate(imm) => {
+                            self.construct_immediate(ty, imm)?.into()
+                        }
+                        Operand::SpecialReg(special) => special.into(),
+                        op @ Operand::Address(_) => {
+                            return Err(CompilationError::InvalidOperand(op.clone()))
+                        }
+                    };
                 self.instructions
                     .push(vm::Instruction::Move(ty, dst_reg, src_reg));
             }
             Operation::Add(ty) => {
-                let [dst_reg, lhs_reg, rhs_reg] =
+                let (dst_reg, lhs_reg, rhs_reg) =
                     self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::Add(ty, dst_reg, lhs_reg, rhs_reg));
             }
             Operation::Multiply(mode, ty) => {
-                let [dst_reg, lhs_reg, rhs_reg] =
+                let (dst_reg, lhs_reg, rhs_reg) =
                     self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::Mul(ty, mode, dst_reg, lhs_reg, rhs_reg));
             }
             Operation::MultiplyAdd(mode, ty) => {
-                let [dst, a, b, c] = self.reg_dst_3src(ty, &instr.operands)?;
-                self.instructions.push(vm::Instruction::Mul(ty, mode, dst, a, b));
-                self.instructions.push(vm::Instruction::Add(ty, dst, dst, c));
+                let (dst, a, b, c) = self.reg_dst_3src(ty, &instr.operands)?;
+                self.instructions
+                    .push(vm::Instruction::Mul(ty, mode, dst, a, b));
+                self.instructions.push(vm::Instruction::Add(
+                    ty,
+                    dst,
+                    dst.into(),
+                    c,
+                ));
             }
             Operation::Sub(ty) => {
-                let [dst, a, b] = self.reg_dst_2src(ty, &instr.operands)?;
+                let (dst, a, b) = self.reg_dst_2src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Sub(ty, dst, a, b))
-            },
+            }
             Operation::Or(ty) => {
-                let [dst, a, b] = self.reg_dst_2src(ty, &instr.operands)?;
+                let (dst, a, b) = self.reg_dst_2src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Or(ty, dst, a, b))
-            },
+            }
             Operation::And(ty) => {
-                let [dst, a, b] = self.reg_dst_2src(ty, &instr.operands)?;
+                let (dst, a, b) = self.reg_dst_2src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::And(ty, dst, a, b))
-            },
+            }
             Operation::FusedMulAdd(_, ty) => {
-                let [dst, a, b, c] = self.reg_dst_3src(ty, &instr.operands)?;
-                self.instructions.push(vm::Instruction::Mul(ty, ast::MulMode::Low, dst, a, b));
-                self.instructions.push(vm::Instruction::Add(ty, dst, dst, c));
-            },
+                let (dst, a, b, c) = self.reg_dst_3src(ty, &instr.operands)?;
+                self.instructions
+                    .push(vm::Instruction::Mul(ty, ast::MulMode::Low, dst, a, b));
+                self.instructions.push(vm::Instruction::Add(
+                    ty,
+                    dst,
+                    dst.into(),
+                    c,
+                ));
+            }
             Operation::Negate(ty) => {
-                let [dst, src] = self.reg_dst_1src(ty, &instr.operands)?;
+                let (dst, src) = self.reg_dst_1src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Neg(ty, dst, src));
-            },
+            }
             Operation::Convert { from, to } => {
-                let [dst, src] = self.reg_dst_1src(from, &instr.operands)?;
+                let (dst, src) = self.reg_dst_1src(from, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Convert {
                     dst_type: to,
                     src_type: from,
                     dst,
                     src,
                 });
-            },
+            }
             Operation::ConvertAddress(_ty, _st) => todo!(),
             Operation::ConvertAddressTo(ty, _st) => {
                 // TODO handle different state spaces
                 // for now, just move the address register into the destination register
-                let [dst, src] = instr.operands.as_slice() else {
-                    todo!();
-                };
-                let dst_reg = self.get_dst_reg(ty, dst)?;
-                let src_reg = self.get_src_reg(ty, src)?;
-                self.instructions
-                    .push(vm::Instruction::Move(ty, dst_reg, src_reg));
+                let (dst, src) = self.reg_dst_1src(ty, &instr.operands)?;
+                self.instructions.push(vm::Instruction::Move(ty, dst, src));
             }
             Operation::SetPredicate(pred, ty) => {
-                let (dst, a, b) = self.reg_pred_2src(ty, instr.operands.as_slice())?;
+                let (dst, a, b) = self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::SetPredicate(ty, pred, dst, a, b));
-            },
+            }
             Operation::ShiftLeft(ty) => {
-                let [dst_reg, lhs_reg, rhs_reg] =
+                let (dst_reg, lhs_reg, rhs_reg) =
                     self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::ShiftLeft(ty, dst_reg, lhs_reg, rhs_reg));
-            },
+            }
             Operation::Call {
                 uniform: _,
                 ident: _,
                 ret_param: _,
                 params: _,
             } => todo!(),
-            Operation::BarrierSync => {
-                match instr.operands.as_slice() {
-                    [idx] => {
-                        let src_reg = self.get_src_reg(ast::Type::U32, idx)?;
-                        self.instructions.push(vm::Instruction::BarrierSync {
-                            idx: src_reg,
-                            cnt: None,
-                        })
-                    },
-                    [_idx, _cnt] => {
-                        todo!()
-                    }
-                    _ => todo!()
+            Operation::BarrierSync => match instr.operands.as_slice() {
+                [idx] => {
+                    let src_reg = self.get_src_reg(ast::Type::U32, idx)?;
+                    self.instructions.push(vm::Instruction::BarrierSync {
+                        idx: src_reg,
+                        cnt: None,
+                    })
                 }
-            }
+                [_idx, _cnt] => {
+                    todo!()
+                }
+                _ => todo!(),
+            },
             Operation::Branch => {
                 let [Operand::Variable(ident)] = instr.operands.as_slice() else {
                     todo!()
@@ -606,10 +607,7 @@ impl<'a> FuncCodegenState<'a> {
         Ok(())
     }
 
-    fn handle_basic_block(
-        &mut self,
-        block: BasicBlock,
-    ) -> Result<(), CompilationError> {
+    fn handle_basic_block(&mut self, block: BasicBlock) -> Result<(), CompilationError> {
         if let Some(label) = block.label {
             self.label_map.insert(label, self.instructions.len());
         }
@@ -646,7 +644,7 @@ impl<'a> FuncCodegenState<'a> {
                     bblocks.push(block2);
                 }
                 // ignore pragmas
-                Statement::Directive(Directive::Pragma(_)) => {},
+                Statement::Directive(Directive::Pragma(_)) => {}
                 _ => todo!(),
             }
         }
@@ -685,7 +683,7 @@ impl<'a> FuncCodegenState<'a> {
             frame_size: self.stack_size,
             shared_size: self.shared_size,
             arg_size: self.param_stack_offset,
-            regs: self.regs,
+            num_regs: self.num_regs,
         };
         Ok((self.ident, frame_desc, self.instructions))
     }
@@ -703,7 +701,6 @@ pub fn compile(module: ast::Module) -> Result<CompiledModule, CompilationError> 
     }
     Ok(cmod)
 }
-
 
 #[cfg(test)]
 mod test {

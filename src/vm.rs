@@ -19,49 +19,8 @@ pub enum StateSpace {
     Shared,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct RegPred {
-    id: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Reg8 {
-    id: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Reg16 {
-    id: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Reg32 {
-    id: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Reg64 {
-    id: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Reg128 {
-    id: usize,
-}
-
 use crate::ast::PredicateOp;
 use crate::ast::Type;
-
-#[derive(Clone, Copy, Debug)]
-pub enum RegOperand {
-    Pred(RegPred),
-    B8(Reg8),
-    B16(Reg16),
-    B32(Reg32),
-    B64(Reg64),
-    B128(Reg128),
-    Special(SpecialReg),
-}
 
 #[derive(Clone, Copy, Debug)]
 pub enum Constant {
@@ -85,80 +44,48 @@ pub enum Constant {
     Pred(bool),
 }
 
-// #[derive(Clone, Copy, Debug)]
-// struct Value(u128);
+#[derive(Clone, Copy, Debug)]
+pub struct GenericReg(pub usize);
 
-// impl Value {
-//     fn assemble(data:  &[u8]) -> Self {
-//         let mut buf = [0u8; 16];
-//         let len = data.len().min(16);
-//         buf[..len].copy_from_slice(&data[..len]);
-//         Value(u128::from_ne_bytes(buf))
-//     }
+#[derive(Clone, Copy, Debug)]
+pub enum RegOperand {
+    Generic(GenericReg),
+    Special(SpecialReg),
+}
 
-//     fn as_u128(self) -> u128 {
-//         self.0
-//     }
+impl From<GenericReg> for RegOperand {
+    fn from(value: GenericReg) -> Self {
+        RegOperand::Generic(value)
+    }
+}
 
-//     fn as_u64(self) -> u64 {
-//         self.0 as u64
-//     }
-
-//     fn as_u32(self) -> u32 {
-//         self.0 as u32
-//     }
-
-//     fn as_u16(self) -> u16 {
-//         self.0 as u16
-//     }
-
-//     fn as_u8(self) -> u8 {
-//         self.0 as u8
-//     }
-
-//     fn as_b128(self) -> [u8; 16] {
-//         self.0.to_ne_bytes()
-//     }
-
-//     fn as_b64(self) -> [u8; 8] {
-//         self.as_u64().to_ne_bytes()
-//     }
-
-//     fn as_b32(self) -> [u8; 4] {
-//         self.as_u32().to_ne_bytes()
-//     }
-
-//     fn as_b16(self) -> [u8; 2] {
-//         self.as_u16().to_ne_bytes()
-//     }
-
-//     fn as_b8(self) -> [u8; 1] {
-//         self.as_u8().to_ne_bytes()
-//     }
-// }
-
+impl From<SpecialReg> for RegOperand {
+    fn from(value: SpecialReg) -> Self {
+        RegOperand::Special(value)
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
-    Load(StateSpace, RegOperand, RegOperand),
-    Store(StateSpace, RegOperand, RegOperand),
+    Load(Type, StateSpace, GenericReg, RegOperand),
+    Store(Type, StateSpace, RegOperand, RegOperand),
     Convert {
         dst_type: Type,
         src_type: Type,
-        dst: RegOperand,
+        dst: GenericReg,
         src: RegOperand,
     },
-    Move(Type, RegOperand, RegOperand),
-    Const(RegOperand, Constant),
-    Add(Type, RegOperand, RegOperand, RegOperand),
-    Sub(Type, RegOperand, RegOperand, RegOperand),
-    Or(Type, RegOperand, RegOperand, RegOperand),
-    And(Type, RegOperand, RegOperand, RegOperand),
-    Mul(Type, MulMode, RegOperand, RegOperand, RegOperand),
+    Move(Type, GenericReg, RegOperand),
+    Const(GenericReg, Constant),
+    Add(Type, GenericReg, RegOperand, RegOperand),
+    Sub(Type, GenericReg, RegOperand, RegOperand),
+    Or(Type, GenericReg, RegOperand, RegOperand),
+    And(Type, GenericReg, RegOperand, RegOperand),
+    Mul(Type, MulMode, GenericReg, RegOperand, RegOperand),
     // todo this should just be expressed as sub with 0
-    Neg(Type, RegOperand, RegOperand),
-    ShiftLeft(Type, RegOperand, RegOperand, RegOperand),
-    SetPredicate(Type, PredicateOp, RegPred, RegOperand, RegOperand),
+    Neg(Type, GenericReg, RegOperand),
+    ShiftLeft(Type, GenericReg, RegOperand, RegOperand),
+    SetPredicate(Type, PredicateOp, GenericReg, RegOperand, RegOperand),
     BarrierSync {
         idx: RegOperand,
         cnt: Option<RegOperand>,
@@ -170,7 +97,7 @@ pub enum Instruction {
     Jump {
         offset: isize,
     },
-    SkipIf(RegPred, bool),
+    SkipIf(RegOperand, bool),
     Return,
 }
 
@@ -186,7 +113,7 @@ struct FrameMeta {
 #[derive(Debug, Clone)]
 struct ThreadState {
     iptr: IPtr,
-    regs: Vec<Registers>,
+    regs: Vec<Vec<u128>>,
     stack_data: Vec<u8>,
     stack_frames: Vec<FrameMeta>,
     nctaid: (u32, u32, u32),
@@ -196,55 +123,12 @@ struct ThreadState {
     // function_args: Vec<isize>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RegDesc {
-    pred_count: usize,
-    b8_count: usize,
-    b16_count: usize,
-    b32_count: usize,
-    b64_count: usize,
-    b128_count: usize,
-}
-
-impl RegDesc {
-    pub fn alloc_pred(&mut self) -> RegPred {
-        let id = self.pred_count;
-        self.pred_count += 1;
-        RegPred { id }
-    }
-    pub fn alloc_b8(&mut self) -> Reg8 {
-        let id = self.b8_count;
-        self.b8_count += 1;
-        Reg8 { id }
-    }
-    pub fn alloc_b16(&mut self) -> Reg16 {
-        let id = self.b16_count;
-        self.b16_count += 1;
-        Reg16 { id }
-    }
-    pub fn alloc_b32(&mut self) -> Reg32 {
-        let id = self.b32_count;
-        self.b32_count += 1;
-        Reg32 { id }
-    }
-    pub fn alloc_b64(&mut self) -> Reg64 {
-        let id = self.b64_count;
-        self.b64_count += 1;
-        Reg64 { id }
-    }
-    pub fn alloc_b128(&mut self) -> Reg128 {
-        let id = self.b128_count;
-        self.b128_count += 1;
-        Reg128 { id }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct FuncFrameDesc {
     pub iptr: IPtr,
     pub frame_size: usize,
     pub arg_size: usize,
-    pub regs: RegDesc,
+    pub num_regs: usize,
     pub shared_size: usize,
 }
 
@@ -256,58 +140,43 @@ pub struct Context {
     symbol_map: HashMap<String, Symbol>,
 }
 
-#[derive(Debug, Clone)]
-struct Registers {
-    pred: Vec<bool>,
-    b8: Vec<[u8; 1]>,
-    b16: Vec<[u8; 2]>,
-    b32: Vec<[u8; 4]>,
-    b64: Vec<[u8; 8]>,
-    b128: Vec<[u8; 16]>,
-}
-
-impl Registers {
-    fn new(desc: RegDesc) -> Registers {
-        Registers {
-            pred: vec![false; desc.pred_count],
-            b8: vec![[0; 1]; desc.b8_count],
-            b16: vec![[0; 2]; desc.b16_count],
-            b32: vec![[0; 4]; desc.b32_count],
-            b64: vec![[0; 8]; desc.b64_count],
-            b128: vec![[0; 16]; desc.b128_count],
-        }
-    }
-}
-
 macro_rules! byte_reg_funcs {
-    ($($t:ty, $get:ident, $set:ident, $field:ident, $n:expr);*) => {
+    ($($get:ident, $set:ident, $helper_fn:ident, $helper_type:ty, $n:expr);* $(;)?) => {
         $(
-            fn $get(&self, reg: $t) -> [u8; $n] {
-                self.regs.last().unwrap().$field[reg.id]
+            fn $get(&self, reg: RegOperand) -> [u8; $n] {
+                self.$helper_fn(reg).to_ne_bytes()
             }
 
-            fn $set(&mut self, reg: $t, value: [u8; $n]) {
-                self.regs.last_mut().unwrap().$field[reg.id] = value;
+            fn $set(&mut self, reg: GenericReg, value: [u8; $n]) {
+                self.regs.last_mut().unwrap()[reg.0] = <$helper_type>::from_ne_bytes(value) as u128;
             }
         )*
     };
 }
 
 macro_rules! int_reg_funcs {
-    ($($t:ty, $get:ident, $set:ident, $field:ident, $t2:ty);*) => {
+    ($($get:ident, $set:ident, $t2:ty);* $(;)?) => {
         $(
             #[allow(dead_code)]
-            fn $get(&self, reg: $t) -> $t2 {
-                <$t2>::from_ne_bytes(self.regs.last().unwrap().$field[reg.id])
+            fn $get(&self, reg: RegOperand) -> $t2 {
+                match reg {
+                    RegOperand::Generic(reg) => self.regs.last().unwrap()[reg.0] as $t2,
+                    RegOperand::Special(reg) => self.get_special(reg) as $t2,
+                }
             }
 
             #[allow(dead_code)]
-            fn $set(&mut self, reg: $t, value: $t2) {
-                self.regs.last_mut().unwrap().$field[reg.id] = value.to_ne_bytes();
+            fn $set(&mut self, reg: GenericReg, value: $t2) {
+                self.regs.last_mut().unwrap()[reg.0] = value as u128;
             }
         )*
     };
 }
+
+/*
+
+
+*/
 
 impl ThreadState {
     fn new(
@@ -328,40 +197,61 @@ impl ThreadState {
         }
     }
 
-    fn get_pred(&self, reg: RegPred) -> bool {
-        self.regs.last().unwrap().pred[reg.id]
+    fn get(&self, reg: RegOperand) -> u128 {
+        self.get_u128(reg)
     }
 
-    fn set_pred(&mut self, reg: RegPred, value: bool) {
-        self.regs.last_mut().unwrap().pred[reg.id] = value;
+    fn set(&mut self, reg: GenericReg, val: u128) {
+        self.set_u128(reg, val)
+    }
+
+    fn get_pred(&self, reg: RegOperand) -> bool {
+        match reg {
+            RegOperand::Generic(reg) => self.regs.last().unwrap()[reg.0] != 0,
+            RegOperand::Special(reg) => self.get_special(reg) != 0,
+        }
+    }
+
+    fn set_pred(&mut self, reg: GenericReg, value: bool) {
+        self.regs.last_mut().unwrap()[reg.0] = value as u128
+    }
+
+    fn get_f32(&self, reg: RegOperand) -> f32 {
+        f32::from_bits(self.get_u32(reg))
+    }
+
+    fn set_f32(&mut self, reg: GenericReg, val: f32) {
+        self.set_u32(reg, val.to_bits())
+    }
+
+    fn get_f64(&self, reg: RegOperand) -> f64 {
+        f64::from_bits(self.get_u64(reg))
+    }
+
+    fn set_f64(&mut self, reg: GenericReg, val: f64) {
+        self.set_u64(reg, val.to_bits())
     }
 
     byte_reg_funcs!(
-        Reg8, get_b8, set_b8, b8, 1;
-        Reg16, get_b16, set_b16, b16, 2;
-        Reg32, get_b32, set_b32, b32, 4;
-        Reg64, get_b64, set_b64, b64, 8;
-        Reg128, get_b128, set_b128, b128, 16
+        get_b8, set_b8, get_u8, u8, 1;
+        get_b16, set_b16, get_u16, u16, 2;
+        get_b32, set_b32, get_u32, u32, 4;
+        get_b64, set_b64, get_u64, u64, 8;
+        get_b128, set_b128, get_u128, u128, 16;
     );
 
     int_reg_funcs!(
-        Reg8, get_u8, set_u8, b8, u8;
-        Reg16, get_u16, set_u16, b16, u16;
-        Reg32, get_u32, set_u32, b32, u32;
-        Reg64, get_u64, set_u64, b64, u64;
-        Reg128, get_u128, set_u128, b128, u128;
+        get_u8, set_u8, u8;
+        get_u16, set_u16, u16;
+        get_u32, set_u32, u32;
+        get_u64, set_u64, u64;
+        get_u128, set_u128, u128;
 
-        Reg8, get_i8, set_i8, b8, i8;
-        Reg16, get_i16, set_i16, b16, i16;
-        Reg32, get_i32, set_i32, b32, i32;
-        Reg64, get_i64, set_i64, b64, i64;
-        Reg128, get_i128, set_i128, b128, i128;
-
-        // Reg8, get_f8, set_f8, b8, f32;
-        // Reg16, get_f16, set_f16, b16, f16;
-        Reg32, get_f32, set_f32, b32, f32;
-        Reg64, get_f64, set_f64, b64, f64
-        // Reg128, get_f128, set_f128, b128, f64
+        get_i8, set_i8, i8;
+        get_i16, set_i16, i16;
+        get_i32, set_i32, i32;
+        get_i64, set_i64, i64;
+        get_i128, set_i128, i128;
     );
 
     fn iptr_fetch_incr(&mut self) -> IPtr {
@@ -385,24 +275,39 @@ impl ThreadState {
         });
         self.stack_data
             .resize(self.stack_data.len() + desc.frame_size, 0);
-        self.regs.push(Registers::new(desc.regs));
+        self.regs.push(vec![0; desc.num_regs]);
         self.iptr = desc.iptr;
     }
 
     fn read_reg_unsigned(&self, reg: RegOperand) -> VmResult<usize> {
-        match reg {
-            RegOperand::Pred(_) | RegOperand::Special(_) => Err(VmError::InvalidAddressOperandRegister(reg)),
-            RegOperand::B8(r) => Ok(self.get_i8(r) as usize),
-            RegOperand::B16(r) => Ok(self.get_i16(r) as usize),
-            RegOperand::B32(r) => Ok(self.get_i32(r) as usize),
-            RegOperand::B64(r) => Ok(self.get_i64(r) as usize),
-            RegOperand::B128(r) => Ok(self.get_i128(r) as usize),
-        }
+        Ok(self.get_u128(reg) as usize)
     }
 
-    fn get_stack_ptr(&self) -> VmResult<usize> {
+    fn get_stack_ptr(&self) -> usize {
         let frame_size = self.stack_frames.last().unwrap().frame_size;
-        Ok(self.stack_data.len() - frame_size)
+        self.stack_data.len() - frame_size
+    }
+
+    fn get_special(&self, s: SpecialReg) -> u128 {
+        match s {
+            SpecialReg::StackPtr => self.get_stack_ptr() as u128,
+            SpecialReg::ThreadId => todo!(),
+            SpecialReg::ThreadIdX => self.tid.0 as u128,
+            SpecialReg::ThreadIdY => self.tid.1 as u128,
+            SpecialReg::ThreadIdZ => self.tid.2 as u128,
+            SpecialReg::NumThread => todo!(),
+            SpecialReg::NumThreadX => self.ntid.0 as u128,
+            SpecialReg::NumThreadY => self.ntid.1 as u128,
+            SpecialReg::NumThreadZ => self.ntid.2 as u128,
+            SpecialReg::CtaId => todo!(),
+            SpecialReg::CtaIdX => self.ctaid.0 as u128,
+            SpecialReg::CtaIdY => self.ctaid.1 as u128,
+            SpecialReg::CtaIdZ => self.ctaid.2 as u128,
+            SpecialReg::NumCta => todo!(),
+            SpecialReg::NumCtaX => self.nctaid.0 as u128,
+            SpecialReg::NumCtaY => self.nctaid.1 as u128,
+            SpecialReg::NumCtaZ => self.nctaid.2 as u128,
+        }
     }
 }
 
@@ -459,7 +364,6 @@ enum ThreadResult {
 }
 
 impl<'a> LaunchParams<'a> {
-
     pub fn func(name: &'a str) -> LaunchParams<'a> {
         LaunchParams {
             func_id: FuncIdent::Name(name),
@@ -505,13 +409,13 @@ struct Barrier {
 }
 
 struct Barriers {
-    barriers: Vec<Option<Barrier>>
+    barriers: Vec<Option<Barrier>>,
 }
 
 impl Barriers {
     pub fn new() -> Self {
         Barriers {
-            barriers: Vec::new()
+            barriers: Vec::new(),
         }
     }
 
@@ -519,7 +423,12 @@ impl Barriers {
         todo!()
     }
 
-    pub fn block(&mut self, idx: usize, target: usize, thread: ThreadState) -> VmResult<Vec<ThreadState>> {
+    pub fn block(
+        &mut self,
+        idx: usize,
+        target: usize,
+        thread: ThreadState,
+    ) -> VmResult<Vec<ThreadState>> {
         self.assert_size(idx);
         if let Some(ref mut barr) = self.barriers[idx] {
             barr.blocked.push(thread);
@@ -527,7 +436,7 @@ impl Barriers {
             if barr.arrived == barr.target {
                 let barr = self.barriers[idx].take().unwrap();
                 return Ok(barr.blocked);
-            } 
+            }
         } else {
             self.barriers[idx] = Some(Barrier {
                 target,
@@ -546,13 +455,13 @@ impl Barriers {
 }
 
 macro_rules! binary_op {
-    ($threadop:expr, $tyop:expr, $dstop:expr, $aop:expr, $bop:expr; 
-        $($target_ty:pat, $reg_size:ident, $op:ident, $getter:ident, $setter:ident);*$(;)?) => {
-        match ($tyop, $dstop, $aop, $bop) {
+    ($threadop:expr, $tyop:expr, $dstop:expr, $aop:expr, $bop:expr;
+        $($target_ty:pat, $op:ident, $getter:ident, $setter:ident);*$(;)?) => {
+        match ($tyop) {
         $(
-            ($target_ty, RegOperand::$reg_size(dst), RegOperand::$reg_size(a), RegOperand::$reg_size(c)) => {
-                let val = $threadop.$getter(a).$op($threadop.$getter(c));
-                $threadop.$setter(dst, val);
+            $target_ty => {
+                let val = $threadop.$getter($aop).$op($threadop.$getter($bop));
+                $threadop.$setter($dstop, val);
             }
         )*
             _ => todo!()
@@ -561,13 +470,13 @@ macro_rules! binary_op {
 }
 
 macro_rules! unary_op {
-    ($threadop:expr, $tyop:expr, $dstop:expr, $srcop:expr; 
-        $($target_ty:pat, $reg_size:ident, $op:ident, $getter:ident, $setter:ident);*$(;)?) => {
-        match ($tyop, $dstop, $srcop) {
+    ($threadop:expr, $tyop:expr, $dstop:expr, $srcop:expr;
+        $($target_ty:pat, $op:ident, $getter:ident, $setter:ident);*$(;)?) => {
+        match ($tyop) {
         $(
-            ($target_ty, RegOperand::$reg_size(dst), RegOperand::$reg_size(src)) => {
-                let val = $threadop.$getter(src).$op();
-                $threadop.$setter(dst, val);
+            $target_ty => {
+                let val = $threadop.$getter($srcop).$op();
+                $threadop.$setter($dstop, val);
             }
         )*
             _ => todo!()
@@ -678,18 +587,18 @@ impl Context {
         while let Some(mut state) = runnable.pop() {
             loop {
                 match self.step_thread(&mut state, &mut shared_mem)? {
-                    ThreadResult::Continue => continue, 
+                    ThreadResult::Continue => continue,
                     ThreadResult::Arrive(idx, cnt) => {
                         let cnt = cnt.unwrap_or(cta_size);
                         runnable.extend(barriers.arrive(idx, cnt)?);
-                        continue
-                    },
+                        continue;
+                    }
                     ThreadResult::Sync(idx, cnt) => {
                         let cnt = cnt.unwrap_or(cta_size);
                         runnable.extend(barriers.block(idx, cnt, state)?);
-                        break
-                    },
-                    ThreadResult::Exit => break
+                        break;
+                    }
+                    ThreadResult::Exit => break,
                 }
             }
         }
@@ -703,7 +612,7 @@ impl Context {
     ) -> VmResult<ThreadResult> {
         let inst = self.fetch_instr(thread.iptr_fetch_incr());
         match inst {
-            Instruction::Load(space, dst, addr) => {
+            Instruction::Load(ty, space, dst, addr) => {
                 // let addr = thread.resolve_address(addr)?;
                 let addr = thread.read_reg_unsigned(addr)?;
                 let data = match space {
@@ -711,63 +620,68 @@ impl Context {
                     StateSpace::Stack => thread.stack_data.as_slice(),
                     StateSpace::Shared => shared_mem,
                 };
-                match dst {
-                    RegOperand::B8(r) => thread.set_b8(r, data[addr..addr + 1].try_into()?),
-                    RegOperand::B16(r) => thread.set_b16(r, data[addr..addr + 2].try_into()?),
-                    RegOperand::B32(r) => thread.set_b32(r, data[addr..addr + 4].try_into()?),
-                    RegOperand::B64(r) => thread.set_b64(r, data[addr..addr + 8].try_into()?),
-                    RegOperand::B128(r) => thread.set_b128(r, data[addr..addr + 16].try_into()?),
-                    o => return Err(VmError::InvalidOperand(inst, o)),
+                match ty.size() {
+                    1 => thread.set_b8(dst, data[addr..addr + 1].try_into()?),
+                    2 => thread.set_b16(dst, data[addr..addr + 2].try_into()?),
+                    4 => thread.set_b32(dst, data[addr..addr + 4].try_into()?),
+                    8 => thread.set_b64(dst, data[addr..addr + 8].try_into()?),
+                    16 => thread.set_b128(dst, data[addr..addr + 16].try_into()?),
+                    o => panic!("inernal error: invalid type size: {o}"),
                 }
             }
-            Instruction::Store(space, src, addr) => {
+            Instruction::Store(ty, space, src, addr) => {
                 // let addr = thread.resolve_address(addr)?;
                 let addr = thread.read_reg_unsigned(addr)?;
-                match src {
-                    RegOperand::B8(r) => {
-                        let val = thread.get_b8(r);
-                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 1].copy_from_slice(&val);
+                match ty.size() {
+                    1 => {
+                        let val = thread.get_b8(src);
+                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 1]
+                            .copy_from_slice(&val);
                     }
-                    RegOperand::B16(r) => {
-                        let val = thread.get_b16(r);
-                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 2].copy_from_slice(&val);
+                    2 => {
+                        let val = thread.get_b16(src);
+                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 2]
+                            .copy_from_slice(&val);
                     }
-                    RegOperand::B32(r) => {
-                        let val = thread.get_b32(r);
-                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 4].copy_from_slice(&val);
+                    4 => {
+                        let val = thread.get_b32(src);
+                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 4]
+                            .copy_from_slice(&val);
                     }
-                    RegOperand::B64(r) => {
-                        let val = thread.get_b64(r);
-                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 8].copy_from_slice(&val);
+                    8 => {
+                        let val = thread.get_b64(src);
+                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 8]
+                            .copy_from_slice(&val);
                     }
-                    RegOperand::B128(r) => {
-                        let val = thread.get_b128(r);
-                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 16].copy_from_slice(&val);
+                    16 => {
+                        let val = thread.get_b128(src);
+                        self.get_data_ptr(space, thread, shared_mem)[addr..addr + 16]
+                            .copy_from_slice(&val);
                     }
-                    o => return Err(VmError::InvalidOperand(inst, o)),
+                    o => panic!("inernal error: invalid type size: {o}"),
                 }
             }
             Instruction::Sub(ty, dst, a, b) => {
                 use std::ops::Sub;
                 binary_op! {
                     thread, ty, dst, a, b;
-                    Type::U64 | Type::B64, B64, sub, get_u64, set_u64;
-                    Type::S64, B64, sub, get_i64, set_i64;
-                    Type::U32 | Type::B32, B32, sub, get_u32, set_u32;
-                    Type::S32, B32, sub, get_i32, set_i32;
-                    Type::F32, B32, sub, get_f32, set_f32;
+                    Type::U64 | Type::B64, sub, get_u64, set_u64;
+                    Type::S64, sub, get_i64, set_i64;
+                    Type::U32 | Type::B32, sub, get_u32, set_u32;
+                    Type::S32, sub, get_i32, set_i32;
+                    Type::F32, sub, get_f32, set_f32;
                 };
             }
             Instruction::Add(ty, dst, a, b) => {
                 use std::ops::Add;
                 binary_op! {
                     thread, ty, dst, a, b;
-                    Type::U64 | Type::B64, B64, add, get_u64, set_u64;
-                    Type::S64, B64, add, get_i64, set_i64;
-                    Type::U32 | Type::B32, B32, add, get_u32, set_u32;
-                    Type::S32, B32, add, get_i32, set_i32;
-                    Type::F64, B64, add, get_f64, set_f64;
-                    Type::F32, B32, add, get_f32, set_f32;
+                    Type::U64 | Type::B64, add, get_u64, set_u64;
+                    Type::S64, add, get_i64, set_i64;
+                    Type::U32 | Type::B32, add, get_u32, set_u32;
+                    Type::S32, add, get_i32, set_i32;
+                    Type::F64, add, get_f64, set_f64;
+                    Type::F32, add, get_f32, set_f32;
                 };
             }
             Instruction::Mul(ty, mode, dst, a, b) => {
@@ -776,27 +690,24 @@ impl Context {
                     MulMode::Low => {
                         binary_op! {
                             thread, ty, dst, a, b;
-                            Type::U64 | Type::B64, B64, mul, get_u64, set_u64;
-                            Type::S64, B64, mul, get_i64, set_i64;
-                            Type::U32 | Type::B32, B32, mul, get_u32, set_u32;
-                            Type::S32, B32, mul, get_i32, set_i32;
-                            Type::F32, B32, mul, get_f32, set_f32;
+                            Type::U64 | Type::B64, mul, get_u64, set_u64;
+                            Type::S64, mul, get_i64, set_i64;
+                            Type::U32 | Type::B32, mul, get_u32, set_u32;
+                            Type::S32, mul, get_i32, set_i32;
+                            Type::F32, mul, get_f32, set_f32;
                         }
-                    },
+                    }
                     MulMode::High => todo!(),
-                    MulMode::Wide => {
-                        use RegOperand::*;
-                        match (ty, dst, a, b) {
-                            (Type::U32, B64(dst), B32(a), B32(b)) => {
-                                thread
-                                    .set_u64(dst, thread.get_u32(a) as u64 * thread.get_u32(b) as u64);
-                            }
-                            (Type::S32, B64(dst), B32(a), B32(b)) => {
-                                thread
-                                    .set_i64(dst, thread.get_i32(a) as i64 * thread.get_i32(b) as i64);
-                            }
-                            _ => todo!()
+                    MulMode::Wide => match ty {
+                        Type::U32 => {
+                            thread
+                                .set_u64(dst, thread.get_u32(a) as u64 * thread.get_u32(b) as u64);
                         }
+                        Type::S32 => {
+                            thread
+                                .set_i64(dst, thread.get_i32(a) as i64 * thread.get_i32(b) as i64);
+                        }
+                        _ => todo!(),
                     },
                 }
             }
@@ -804,36 +715,36 @@ impl Context {
                 use std::ops::BitOr;
                 binary_op! {
                     thread, ty, dst, a, b;
-                    Type::Pred, Pred, bitor, get_pred, set_pred;
-                    Type::U64 | Type::B64 | Type::S64, B64, bitor, get_u64, set_u64;
-                    Type::U32 | Type::B32 | Type::S32, B32, bitor, get_u32, set_u32;
+                    Type::Pred, bitor, get_pred, set_pred;
+                    Type::U64 | Type::B64 | Type::S64, bitor, get_u64, set_u64;
+                    Type::U32 | Type::B32 | Type::S32, bitor, get_u32, set_u32;
                 };
             }
             Instruction::And(ty, dst, a, b) => {
                 use std::ops::BitAnd;
                 binary_op! {
                     thread, ty, dst, a, b;
-                    Type::Pred, Pred, bitand, get_pred, set_pred;
-                    Type::U64 | Type::B64 | Type::S64, B64, bitand, get_u64, set_u64;
-                    Type::U32 | Type::B32 | Type::S64, B32, bitand, get_u32, set_u32;
+                    Type::Pred, bitand, get_pred, set_pred;
+                    Type::U64 | Type::B64 | Type::S64, bitand, get_u64, set_u64;
+                    Type::U32 | Type::B32 | Type::S64, bitand, get_u32, set_u32;
                 };
             }
             Instruction::Neg(ty, dst, src) => {
                 use std::ops::Neg;
                 unary_op! {
                     thread, ty, dst, src;
-                    Type::S64, B64, neg, get_i64, set_i64;
-                    Type::S32, B32, neg, get_i32, set_i32;
-                    Type::F32, B32, neg, get_f32, set_f32;
+                    Type::S64, neg, get_i64, set_i64;
+                    Type::S32, neg, get_i32, set_i32;
+                    Type::F32, neg, get_f32, set_f32;
                 };
             }
             Instruction::ShiftLeft(ty, dst, a, b) => {
                 use std::ops::Shl;
                 binary_op! {
                     thread, ty, dst, a, b;
-                    Type::B64, B64, shl, get_u64, set_u64;
-                    Type::B32, B32, shl, get_u32, set_u32;
-                    Type::B16, B16, shl, get_u16, set_u16;
+                    Type::B64, shl, get_u64, set_u64;
+                    Type::B32, shl, get_u32, set_u32;
+                    Type::B16, shl, get_u16, set_u16;
                 };
             }
             Instruction::Convert {
@@ -841,70 +752,30 @@ impl Context {
                 src_type,
                 dst,
                 src,
-            } => {
-                use RegOperand::*;
-                match (dst_type, src_type, dst, src) {
-                    (Type::U64, Type::U32, B64(dst), B32(src)) => {
-                        thread.set_u64(dst, thread.get_u32(src) as u64);
-                    }
-                    _ => todo!(),
+            } => match (dst_type, src_type) {
+                (Type::U64, Type::U32) => {
+                    thread.set_u64(dst, thread.get_u32(src) as u64);
                 }
-            }
+                _ => todo!(),
+            },
             Instruction::Move(_, dst, src) => {
-                use RegOperand::*;
-                match (dst, src) {
-                    (B64(dst), B64(src)) => {
-                        thread.set_b64(dst, thread.get_b64(src));
-                    }
-                    (B32(dst), B32(src)) => {
-                        thread.set_b32(dst, thread.get_b32(src));
-                    }
-                    (B32(dst), Special(SpecialReg::ThreadIdX)) => {
-                        thread.set_u32(dst, thread.tid.0);
-                    }
-                    (B32(dst), Special(SpecialReg::NumThreadX)) => {
-                        thread.set_u32(dst, thread.ntid.0);
-                    }
-                    (B32(dst), Special(SpecialReg::CtaIdX)) => {
-                        thread.set_u32(dst, thread.ctaid.0);
-                    }
-                    (B32(dst), Special(SpecialReg::NumCtaX)) => {
-                        thread.set_u32(dst, thread.nctaid.0);
-                    }
-                    (B32(dst), Special(SpecialReg::ThreadIdY)) => {
-                        thread.set_u32(dst, thread.tid.1);
-                    }
-                    (B32(dst), Special(SpecialReg::NumThreadY)) => {
-                        thread.set_u32(dst, thread.ntid.1);
-                    }
-                    (B32(dst), Special(SpecialReg::CtaIdY)) => {
-                        thread.set_u32(dst, thread.ctaid.1);
-                    }
-                    (B32(dst), Special(SpecialReg::NumCtaY)) => {
-                        thread.set_u32(dst, thread.nctaid.1);
-                    }
-                    (B64(dst), Special(SpecialReg::StackPtr)) => {
-                        thread.set_u64(dst, thread.get_stack_ptr()? as u64)
-                    }
-                    _ => todo!(),
-                }
+                thread.set(dst, thread.get(src));
             }
             Instruction::Const(dst, value) => {
-                use RegOperand::*;
-                match (dst, value) {
-                    (B64(dst), Constant::U64(value)) => thread.set_u64(dst, value),
-                    (B64(dst), Constant::S64(value)) => thread.set_i64(dst, value),
-                    (B32(dst), Constant::U32(value)) => thread.set_u32(dst, value),
-                    (B32(dst), Constant::S32(value)) => thread.set_i32(dst, value),
-                    (B32(dst), Constant::F32(value)) => thread.set_f32(dst, value),
+                match value {
+                    Constant::U64(value) => thread.set_u64(dst, value),
+                    Constant::S64(value) => thread.set_i64(dst, value),
+                    Constant::U32(value) => thread.set_u32(dst, value),
+                    Constant::S32(value) => thread.set_i32(dst, value),
+                    Constant::F32(value) => thread.set_f32(dst, value),
 
                     // temporary fix for operations that move address of local into register
-                    (B32(dst), Constant::U64(value)) => thread.set_u32(dst, value as u32),
+                    Constant::U64(value) => thread.set_u32(dst, value as u32),
                     _ => todo!(),
                 }
             }
-            Instruction::SetPredicate(ty, op, dst, a, b) => match (ty, a, b) {
-                (Type::U64, RegOperand::B64(a), RegOperand::B64(b)) => {
+            Instruction::SetPredicate(ty, op, dst, a, b) => match ty {
+                Type::U64 => {
                     let a = thread.get_u64(a);
                     let b = thread.get_u64(b);
                     let value = match op {
@@ -917,7 +788,7 @@ impl Context {
                     };
                     thread.set_pred(dst, value);
                 }
-                (Type::S64, RegOperand::B64(a), RegOperand::B64(b)) => {
+                Type::S64 => {
                     let a = thread.get_i64(a);
                     let b = thread.get_i64(b);
                     let value = match op {
@@ -930,36 +801,16 @@ impl Context {
                     };
                     thread.set_pred(dst, value);
                 }
-                _ => todo!()
+                _ => todo!(),
             },
             Instruction::BarrierSync { idx, cnt } => {
-                let RegOperand::B32(idx) = idx else {
-                    return Err(VmError::InvalidOperand(inst, idx));
-                };
                 let idx = thread.get_u32(idx) as usize;
-                let cnt = if let Some(cnt) = cnt {
-                    let RegOperand::B32(cnt) = cnt else {
-                        return Err(VmError::InvalidOperand(inst, cnt));
-                    };
-                    Some(thread.get_u32(cnt) as usize)
-                } else {
-                    None
-                };
+                let cnt = cnt.map(|r| thread.get_u64(r) as usize);
                 return Ok(ThreadResult::Sync(idx, cnt));
             }
             Instruction::BarrierArrive { idx, cnt } => {
-                let RegOperand::B32(idx) = idx else {
-                    return Err(VmError::InvalidOperand(inst, idx));
-                };
                 let idx = thread.get_u32(idx) as usize;
-                let cnt = if let Some(cnt) = cnt {
-                    let RegOperand::B32(cnt) = cnt else {
-                        return Err(VmError::InvalidOperand(inst, cnt));
-                    };
-                    Some(thread.get_u32(cnt) as usize)
-                } else {
-                    None
-                };
+                let cnt = cnt.map(|r| thread.get_u64(r) as usize);
                 return Ok(ThreadResult::Arrive(idx, cnt));
             }
             Instruction::Jump { offset } => {
@@ -986,8 +837,11 @@ impl Context {
                     return Err(VmError::InvalidFunctionName(s.to_string()));
                 };
                 self.descriptors[*i]
-            },
-            FuncIdent::Id(i) => *self.descriptors.get(i).ok_or(VmError::InvalidFunctionId(i))?,
+            }
+            FuncIdent::Id(i) => *self
+                .descriptors
+                .get(i)
+                .ok_or(VmError::InvalidFunctionId(i))?,
         };
         let arg_size: usize = args
             .iter()
