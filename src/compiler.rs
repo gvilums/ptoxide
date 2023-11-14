@@ -36,7 +36,8 @@ struct BasicBlock {
 #[derive(Clone, Copy, Debug)]
 enum Variable {
     Register(vm::RegOperand),
-    Memory(vm::AddrOperand),
+    Absolute(usize),
+    Stack(isize),
 }
 struct VariableMap(HashMap<String, Variable>);
 
@@ -59,7 +60,7 @@ impl VariableMap {
                 vm::RegOperand::Pred(pred) => Ok(*pred),
                 _ => Err(CompilationError::InvalidRegisterType(*reg)),
             },
-            Some(Variable::Memory(addr)) => Err(CompilationError::InvalidStateSpace),
+            Some(_) => Err(CompilationError::InvalidStateSpace),
             _ => Err(CompilationError::UndefinedSymbol(ident.to_string())),
         }
     }
@@ -67,15 +68,7 @@ impl VariableMap {
     pub fn get_reg(&self, ident: &str) -> Result<vm::RegOperand, CompilationError> {
         match self.0.get(ident) {
             Some(Variable::Register(reg)) => Ok(*reg),
-            Some(Variable::Memory(addr)) => Err(CompilationError::InvalidStateSpace),
-            _ => Err(CompilationError::UndefinedSymbol(ident.to_string())),
-        }
-    }
-
-    pub fn get_memory(&self, ident: &str) -> Result<vm::AddrOperand, CompilationError> {
-        match self.0.get(ident) {
-            Some(Variable::Register(reg)) => Err(CompilationError::InvalidStateSpace),
-            Some(Variable::Memory(addr)) => Ok(*addr),
+            Some(_) => Err(CompilationError::InvalidStateSpace),
             _ => Err(CompilationError::UndefinedSymbol(ident.to_string())),
         }
     }
@@ -175,10 +168,10 @@ impl<'a> FuncCodegenState<'a> {
                 assert!(align.count_ones() == 1);
                 // align to required alignment
                 self.shared_size = (self.shared_size + align - 1) & !(align - 1);
-                let loc = vm::AddrOperand::Absolute(self.shared_size);
+                let loc = Variable::Absolute(self.shared_size);
                 self.shared_size += size;
                 self.var_map
-                    .insert(decl.ident, Variable::Memory(loc));
+                    .insert(decl.ident, loc);
             },
             StateSpace::Global => todo!(),
             StateSpace::Local => todo!(),
@@ -222,10 +215,10 @@ impl<'a> FuncCodegenState<'a> {
             self.param_stack_offset =
                 (self.param_stack_offset + param.ty.alignment() - 1) & !(param.ty.alignment() - 1);
 
-            let loc = vm::AddrOperand::StackRelative(-(self.param_stack_offset as isize));
+            let loc = Variable::Stack(-(self.param_stack_offset as isize));
 
             self.var_map
-                .insert(param.ident.clone(), Variable::Memory(loc));
+                .insert(param.ident.clone(), loc);
         }
         Ok(())
     }
@@ -364,6 +357,41 @@ impl<'a> FuncCodegenState<'a> {
         Ok([dst_reg, src1_reg, src2_reg, src3_reg])
     }
 
+    fn resolve_addr_operand(&self, operand: &ast::AddressOperand) -> Result<vm::AddrOperand, CompilationError> {
+        use ast::AddressOperand;
+        use vm::AddrOperand;
+        Ok(match operand {
+            AddressOperand::Address(ident) => {
+                match self.var_map.get(ident).ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
+                    Variable::Register(reg) => {
+                        AddrOperand::RegisterRelative(*reg, 0)
+                    }
+                    Variable::Absolute(addr) => {
+                        AddrOperand::Absolute(*addr)
+                    }
+                    Variable::Stack(addr) => {
+                        AddrOperand::StackRelative(*addr)
+                    }
+                }
+            },
+            AddressOperand::AddressOffset(ident, offset) => {
+                match self.var_map.get(ident).ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
+                    Variable::Register(reg) => {
+                        AddrOperand::RegisterRelative(*reg, *offset as isize)
+                    }
+                    Variable::Absolute(addr) => {
+                        AddrOperand::Absolute(*addr + *offset as usize)
+                    }
+                    Variable::Stack(addr) => {
+                        AddrOperand::StackRelative(*addr + *offset as isize)
+                    }
+                }
+            },
+            AddressOperand::AddressOffsetVar(_, _) => todo!(),
+            AddressOperand::ArrayIndex(_, _) => todo!(),
+        })
+    }
+
     fn handle_instruction(&mut self, instr: ast::Instruction) -> Result<(), CompilationError> {
         use ast::AddressOperand;
         use ast::Operation::*;
@@ -388,34 +416,7 @@ impl<'a> FuncCodegenState<'a> {
                     todo!()
                 };
                 let dst_reg = self.var_map.get_reg(ident)?;
-                let src_op = match self.var_map.get(addr_op.get_ident()) {
-                    Some(Variable::Register(reg)) => {
-                        match addr_op {
-                            AddressOperand::Address(_) => {
-                                AddrOperand::RegisterRelative(*reg, 0)
-                            }
-                            AddressOperand::AddressOffset(_, offset) => {
-                                AddrOperand::RegisterRelative(*reg, *offset as isize)
-                            },
-                            AddressOperand::AddressOffsetVar(_, ident) => todo!(),
-                            AddressOperand::ArrayIndex(_, idx) => todo!(),
-                        }
-                    }
-                    Some(Variable::Memory(addr)) => {
-                        match addr_op {
-                            AddressOperand::Address(_) => {}
-                            AddressOperand::AddressOffset(_, offset) => todo!(),
-                            AddressOperand::AddressOffsetVar(_, ident) => todo!(),
-                            AddressOperand::ArrayIndex(_, idx) => todo!(),
-                        }
-                        addr.clone()
-                    }
-                    None => {
-                        return Err(CompilationError::UndefinedSymbol(
-                            addr_op.get_ident().to_string(),
-                        ))
-                    }
-                };
+                let src_op = self.resolve_addr_operand(addr_op)?;
                 // let base_addr = var_map.get_memory(addr_op.get_ident())?;
                 self.instructions.push(vm::Instruction::Load(
                     // todo: handle invalid state space and get rid of panic
@@ -432,31 +433,7 @@ impl<'a> FuncCodegenState<'a> {
                     todo!()
                 };
                 let src_reg = self.var_map.get_reg(ident)?;
-                let dst_op = match self.var_map.get(addr_op.get_ident()) {
-                    Some(Variable::Register(reg)) => {
-                        match addr_op {
-                            AddressOperand::Address(_) => {}
-                            AddressOperand::AddressOffset(_, offset) => todo!(),
-                            AddressOperand::AddressOffsetVar(_, ident) => todo!(),
-                            AddressOperand::ArrayIndex(_, idx) => todo!(),
-                        }
-                        AddrOperand::RegisterRelative(*reg, 0)
-                    }
-                    Some(Variable::Memory(addr)) => {
-                        match addr_op {
-                            AddressOperand::Address(_) => {}
-                            AddressOperand::AddressOffset(_, offset) => todo!(),
-                            AddressOperand::AddressOffsetVar(_, ident) => todo!(),
-                            AddressOperand::ArrayIndex(_, idx) => todo!(),
-                        }
-                        addr.clone()
-                    }
-                    None => {
-                        return Err(CompilationError::UndefinedSymbol(
-                            addr_op.get_ident().to_string(),
-                        ))
-                    }
-                };
+                let dst_op = self.resolve_addr_operand(addr_op)?;
                 // let base_addr = var_map.get_memory(addr_op.get_ident())?;
                 self.instructions.push(vm::Instruction::Store(
                     // todo: handle invalid state space and get rid of panic
@@ -476,8 +453,14 @@ impl<'a> FuncCodegenState<'a> {
                         match self.var_map.get(ident) {
                             Some(Variable::Register(reg)) => *reg,
                             // this is an LEA operation, not just a normal mov 
-                            Some(Variable::Memory(addr)) => {
-                                self.instructions.push(vm::Instruction::LoadEffectiveAddress(ty, dst_reg, *addr));
+                            Some(Variable::Stack(offset)) => {
+                                let addr = vm::AddrOperand::StackRelative(*offset);
+                                self.instructions.push(vm::Instruction::LoadEffectiveAddress(ty, dst_reg, addr));
+                                return Ok(())
+                            }
+                            Some(Variable::Absolute(addr)) => {
+                                let addr = vm::AddrOperand::Absolute(*addr);
+                                self.instructions.push(vm::Instruction::LoadEffectiveAddress(ty, dst_reg, addr));
                                 return Ok(())
                             }
                             // undefined variable
