@@ -85,57 +85,57 @@ pub enum Constant {
     Pred(bool),
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Value(u128);
+// #[derive(Clone, Copy, Debug)]
+// struct Value(u128);
 
-impl Value {
-    fn assemble(data:  &[u8]) -> Self {
-        let mut buf = [0u8; 16];
-        let len = data.len().min(16);
-        buf[..len].copy_from_slice(&data[..len]);
-        Value(u128::from_ne_bytes(buf))
-    }
+// impl Value {
+//     fn assemble(data:  &[u8]) -> Self {
+//         let mut buf = [0u8; 16];
+//         let len = data.len().min(16);
+//         buf[..len].copy_from_slice(&data[..len]);
+//         Value(u128::from_ne_bytes(buf))
+//     }
 
-    fn as_u128(self) -> u128 {
-        self.0
-    }
+//     fn as_u128(self) -> u128 {
+//         self.0
+//     }
 
-    fn as_u64(self) -> u64 {
-        self.0 as u64
-    }
+//     fn as_u64(self) -> u64 {
+//         self.0 as u64
+//     }
 
-    fn as_u32(self) -> u32 {
-        self.0 as u32
-    }
+//     fn as_u32(self) -> u32 {
+//         self.0 as u32
+//     }
 
-    fn as_u16(self) -> u16 {
-        self.0 as u16
-    }
+//     fn as_u16(self) -> u16 {
+//         self.0 as u16
+//     }
 
-    fn as_u8(self) -> u8 {
-        self.0 as u8
-    }
+//     fn as_u8(self) -> u8 {
+//         self.0 as u8
+//     }
 
-    fn as_b128(self) -> [u8; 16] {
-        self.0.to_ne_bytes()
-    }
+//     fn as_b128(self) -> [u8; 16] {
+//         self.0.to_ne_bytes()
+//     }
 
-    fn as_b64(self) -> [u8; 8] {
-        self.as_u64().to_ne_bytes()
-    }
+//     fn as_b64(self) -> [u8; 8] {
+//         self.as_u64().to_ne_bytes()
+//     }
 
-    fn as_b32(self) -> [u8; 4] {
-        self.as_u32().to_ne_bytes()
-    }
+//     fn as_b32(self) -> [u8; 4] {
+//         self.as_u32().to_ne_bytes()
+//     }
 
-    fn as_b16(self) -> [u8; 2] {
-        self.as_u16().to_ne_bytes()
-    }
+//     fn as_b16(self) -> [u8; 2] {
+//         self.as_u16().to_ne_bytes()
+//     }
 
-    fn as_b8(self) -> [u8; 1] {
-        self.as_u8().to_ne_bytes()
-    }
-}
+//     fn as_b8(self) -> [u8; 1] {
+//         self.as_u8().to_ne_bytes()
+//     }
+// }
 
 
 #[derive(Clone, Copy, Debug)]
@@ -289,8 +289,8 @@ impl Registers {
     }
 }
 
-macro_rules! generate_reg_functions {
-    ($($t:ident, $get:ident, $set:ident, $field:ident, $n:expr);*) => {
+macro_rules! byte_reg_funcs {
+    ($($t:ty, $get:ident, $set:ident, $field:ident, $n:expr);*) => {
         $(
             fn $get(&self, reg: $t) -> [u8; $n] {
                 self.regs.last().unwrap().$field[reg.id]
@@ -303,13 +303,15 @@ macro_rules! generate_reg_functions {
     };
 }
 
-macro_rules! generate_reg_functions2 {
-    ($($t:ident, $get:ident, $set:ident, $field:ident, $t2:ident);*) => {
+macro_rules! int_reg_funcs {
+    ($($t:ty, $get:ident, $set:ident, $field:ident, $t2:ty);*) => {
         $(
+            #[allow(dead_code)]
             fn $get(&self, reg: $t) -> $t2 {
-                $t2::from_ne_bytes(self.regs.last().unwrap().$field[reg.id])
+                <$t2>::from_ne_bytes(self.regs.last().unwrap().$field[reg.id])
             }
 
+            #[allow(dead_code)]
             fn $set(&mut self, reg: $t, value: $t2) {
                 self.regs.last_mut().unwrap().$field[reg.id] = value.to_ne_bytes();
             }
@@ -344,7 +346,7 @@ impl ThreadState {
         self.regs.last_mut().unwrap().pred[reg.id] = value;
     }
 
-    generate_reg_functions!(
+    byte_reg_funcs!(
         Reg8, get_b8, set_b8, b8, 1;
         Reg16, get_b16, set_b16, b16, 2;
         Reg32, get_b32, set_b32, b32, 4;
@@ -352,7 +354,7 @@ impl ThreadState {
         Reg128, get_b128, set_b128, b128, 16
     );
 
-    generate_reg_functions2!(
+    int_reg_funcs!(
         Reg8, get_u8, set_u8, b8, u8;
         Reg16, get_u16, set_u16, b16, u16;
         Reg32, get_u32, set_u32, b32, u32;
@@ -790,6 +792,7 @@ impl Context {
                     Type::S64, B64, add, get_i64, set_i64;
                     Type::U32 | Type::B32, B32, add, get_u32, set_u32;
                     Type::S32, B32, add, get_i32, set_i32;
+                    Type::F64, B64, add, get_f64, set_f64;
                     Type::F32, B32, add, get_f32, set_f32;
                 };
             }
@@ -829,7 +832,7 @@ impl Context {
                     thread, ty, dst, a, b;
                     Type::Pred, Pred, bitor, get_pred, set_pred;
                     Type::U64 | Type::B64 | Type::S64, B64, bitor, get_u64, set_u64;
-                    Type::U32 | Type::B32 | Type::S64, B32, bitor, get_u32, set_u32;
+                    Type::U32 | Type::B32 | Type::S32, B32, bitor, get_u32, set_u32;
                 };
             }
             Instruction::And(ty, dst, a, b) => {
@@ -837,8 +840,8 @@ impl Context {
                 binary_op! {
                     thread, ty, dst, a, b;
                     Type::Pred, Pred, bitand, get_pred, set_pred;
-                    Type::U64 | Type::B64, B64, bitand, get_u64, set_u64;
-                    Type::U32 | Type::B32, B32, bitand, get_u32, set_u32;
+                    Type::U64 | Type::B64 | Type::S64, B64, bitand, get_u64, set_u64;
+                    Type::U32 | Type::B32 | Type::S64, B32, bitand, get_u32, set_u32;
                 };
             }
             Instruction::Neg(ty, dst, src) => {
@@ -854,8 +857,9 @@ impl Context {
                 use std::ops::Shl;
                 binary_op! {
                     thread, ty, dst, a, b;
-                    Type::U64 | Type::B64, B64, shl, get_u64, set_u64;
+                    Type::B64, B64, shl, get_u64, set_u64;
                     Type::B32, B32, shl, get_u32, set_u32;
+                    Type::B16, B16, shl, get_u16, set_u16;
                 };
             }
             Instruction::Convert {
