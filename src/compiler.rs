@@ -107,6 +107,16 @@ impl CompiledModule {
     }
 }
 
+fn resolve_state_space(st: ast::StateSpace) -> Result<vm::StateSpace, CompilationError> {
+    use ast::StateSpace::*;
+    match st {
+        Global | Constant => Ok(vm::StateSpace::Global),
+        Shared => Ok(vm::StateSpace::Shared),
+        Local | Parameter => Ok(vm::StateSpace::Stack),
+        Register => Err(CompilationError::InvalidStateSpace),
+    }
+}
+
 struct FuncCodegenState<'a> {
     parent: &'a CompiledModule,
     ident: String,
@@ -415,11 +425,8 @@ impl<'a> FuncCodegenState<'a> {
                 };
                 let dst_reg = self.var_map.get_reg(ident)?;
                 let src_op = self.resolve_addr_operand(addr_op)?;
-                // let base_addr = var_map.get_memory(addr_op.get_ident())?;
                 self.instructions.push(vm::Instruction::Load(
-                    // todo: handle invalid state space and get rid of panic
-                    st.to_vm()
-                        .unwrap_or_else(|| panic!("invalid state space: {:?}", st)),
+                    resolve_state_space(st)?,
                     dst_reg,
                     src_op,
                 ))
@@ -432,11 +439,8 @@ impl<'a> FuncCodegenState<'a> {
                 };
                 let src_reg = self.var_map.get_reg(ident)?;
                 let dst_op = self.resolve_addr_operand(addr_op)?;
-                // let base_addr = var_map.get_memory(addr_op.get_ident())?;
                 self.instructions.push(vm::Instruction::Store(
-                    // todo: handle invalid state space and get rid of panic
-                    st.to_vm()
-                        .unwrap_or_else(|| panic!("invalid state space: {:?}", st)),
+                    resolve_state_space(st)?,
                     src_reg,
                     dst_op,
                 ))
