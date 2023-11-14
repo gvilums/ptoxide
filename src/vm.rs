@@ -85,6 +85,58 @@ pub enum Constant {
     Pred(bool),
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Value(u128);
+
+impl Value {
+    fn assemble(data:  &[u8]) -> Self {
+        let mut buf = [0u8; 16];
+        let len = data.len().min(16);
+        buf[..len].copy_from_slice(&data[..len]);
+        Value(u128::from_ne_bytes(buf))
+    }
+
+    fn as_u128(self) -> u128 {
+        self.0
+    }
+
+    fn as_u64(self) -> u64 {
+        self.0 as u64
+    }
+
+    fn as_u32(self) -> u32 {
+        self.0 as u32
+    }
+
+    fn as_u16(self) -> u16 {
+        self.0 as u16
+    }
+
+    fn as_u8(self) -> u8 {
+        self.0 as u8
+    }
+
+    fn as_b128(self) -> [u8; 16] {
+        self.0.to_ne_bytes()
+    }
+
+    fn as_b64(self) -> [u8; 8] {
+        self.as_u64().to_ne_bytes()
+    }
+
+    fn as_b32(self) -> [u8; 4] {
+        self.as_u32().to_ne_bytes()
+    }
+
+    fn as_b16(self) -> [u8; 2] {
+        self.as_u16().to_ne_bytes()
+    }
+
+    fn as_b8(self) -> [u8; 1] {
+        self.as_u8().to_ne_bytes()
+    }
+}
+
 
 #[derive(Clone, Copy, Debug)]
 pub enum AddrOperand {
@@ -388,6 +440,10 @@ pub enum VmError {
     InvalidOperand(Instruction, RegOperand),
     #[error("Parameter data did not match descriptor")]
     ParamDataSizeMismatch,
+    #[error("Invalid function id {0}")]
+    InvalidFunctionId(usize),
+    #[error("Invalid function name {0}")]
+    InvalidFunctionName(String),
     #[error("Slice size mismatch")]
     SliceSizeMismatch(#[from] std::array::TryFromSliceError),
     #[error("Parse error: {0:?}")]
@@ -409,8 +465,14 @@ pub enum Argument<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct LaunchParams {
-    func_id: usize,
+enum FuncIdent<'a> {
+    Name(&'a str),
+    Id(usize),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LaunchParams<'a> {
+    func_id: FuncIdent<'a>,
     grid_dim: (u32, u32, u32),
     block_dim: (u32, u32, u32),
 }
@@ -422,36 +484,40 @@ enum ThreadResult {
     Exit,
 }
 
-impl LaunchParams {
-    pub fn new() -> LaunchParams {
+impl<'a> LaunchParams<'a> {
+
+    pub fn func(name: &'a str) -> LaunchParams<'a> {
         LaunchParams {
-            func_id: 0,
+            func_id: FuncIdent::Name(name),
             grid_dim: (1, 1, 1),
             block_dim: (1, 1, 1),
         }
     }
 
-    pub fn func(mut self, id: usize) -> LaunchParams {
-        self.func_id = id;
-        self
+    pub fn func_id(id: usize) -> LaunchParams<'a> {
+        LaunchParams {
+            func_id: FuncIdent::Id(id),
+            grid_dim: (1, 1, 1),
+            block_dim: (1, 1, 1),
+        }
     }
 
-    pub fn grid1d(mut self, x: u32) -> LaunchParams {
+    pub fn grid1d(mut self, x: u32) -> LaunchParams<'a> {
         self.grid_dim = (x, 1, 1);
         self
     }
 
-    pub fn grid2d(mut self, x: u32, y: u32) -> LaunchParams {
+    pub fn grid2d(mut self, x: u32, y: u32) -> LaunchParams<'a> {
         self.grid_dim = (x, y, 1);
         self
     }
 
-    pub fn block1d(mut self, x: u32) -> LaunchParams {
+    pub fn block1d(mut self, x: u32) -> LaunchParams<'a> {
         self.block_dim = (x, 1, 1);
         self
     }
 
-    pub fn block2d(mut self, x: u32, y: u32) -> LaunchParams {
+    pub fn block2d(mut self, x: u32, y: u32) -> LaunchParams<'a> {
         self.block_dim = (x, y, 1);
         self
     }
@@ -503,6 +569,36 @@ impl Barriers {
             self.barriers.resize(idx + 1, None);
         }
     }
+}
+
+macro_rules! binary_op {
+    ($threadop:expr, $tyop:expr, $dstop:expr, $aop:expr, $bop:expr; 
+        $($target_ty:pat, $reg_size:ident, $op:ident, $getter:ident, $setter:ident);*$(;)?) => {
+        match ($tyop, $dstop, $aop, $bop) {
+        $(
+            ($target_ty, RegOperand::$reg_size(dst), RegOperand::$reg_size(a), RegOperand::$reg_size(c)) => {
+                let val = $threadop.$getter(a).$op($threadop.$getter(c));
+                $threadop.$setter(dst, val);
+            }
+        )*
+            _ => todo!()
+        }
+    };
+}
+
+macro_rules! unary_op {
+    ($threadop:expr, $tyop:expr, $dstop:expr, $srcop:expr; 
+        $($target_ty:pat, $reg_size:ident, $op:ident, $getter:ident, $setter:ident);*$(;)?) => {
+        match ($tyop, $dstop, $srcop) {
+        $(
+            ($target_ty, RegOperand::$reg_size(dst), RegOperand::$reg_size(src)) => {
+                let val = $threadop.$getter(src).$op();
+                $threadop.$setter(dst, val);
+            }
+        )*
+            _ => todo!()
+        }
+    };
 }
 
 impl Context {
@@ -676,154 +772,91 @@ impl Context {
                 }
             }
             Instruction::Sub(ty, dst, a, b) => {
-                use RegOperand::*;
-                match (dst, a, b) {
-                    (B64(dst), B64(a), B64(b)) => match ty {
-                        Type::U64 | Type::B64 => {
-                            thread.set_u64(dst, thread.get_u64(a) - thread.get_u64(b));
-                        }
-                        Type::S64 => {
-                            thread.set_i64(dst, thread.get_i64(a) - thread.get_i64(b));
-                        }
-                        _ => todo!(),
-                    },
-                    (B32(dst), B32(a), B32(b)) => match ty {
-                        Type::U32 | Type::B32 => {
-                            thread.set_u32(dst, thread.get_u32(a) - thread.get_u32(b));
-                        }
-                        Type::S32 => {
-                            thread.set_i32(dst, thread.get_i32(a) - thread.get_i32(b));
-                        }
-                        Type::F32 => {
-                            thread.set_f32(dst, thread.get_f32(a) - thread.get_f32(b));
-                        }
-                        _ => todo!(),
-                    },
-                    _ => todo!(),
-                }
+                use std::ops::Sub;
+                binary_op! {
+                    thread, ty, dst, a, b;
+                    Type::U64 | Type::B64, B64, sub, get_u64, set_u64;
+                    Type::S64, B64, sub, get_i64, set_i64;
+                    Type::U32 | Type::B32, B32, sub, get_u32, set_u32;
+                    Type::S32, B32, sub, get_i32, set_i32;
+                    Type::F32, B32, sub, get_f32, set_f32;
+                };
             }
             Instruction::Add(ty, dst, a, b) => {
-                use RegOperand::*;
-                match (dst, a, b) {
-                    (B64(dst), B64(a), B64(b)) => match ty {
-                        Type::U64 | Type::B64 => {
-                            thread.set_u64(dst, thread.get_u64(a) + thread.get_u64(b));
-                        }
-                        Type::S64 => {
-                            thread.set_i64(dst, thread.get_i64(a) + thread.get_i64(b));
-                        }
-                        _ => todo!(),
-                    },
-                    (B32(dst), B32(a), B32(b)) => match ty {
-                        Type::U32 | Type::B32 => {
-                            thread.set_u32(dst, thread.get_u32(a) + thread.get_u32(b));
-                        }
-                        Type::S32 => {
-                            thread.set_i32(dst, thread.get_i32(a) + thread.get_i32(b));
-                        }
-                        Type::F32 => {
-                            thread.set_f32(dst, thread.get_f32(a) + thread.get_f32(b));
-                        }
-                        _ => todo!(),
-                    },
-                    _ => todo!(),
-                }
+                use std::ops::Add;
+                binary_op! {
+                    thread, ty, dst, a, b;
+                    Type::U64 | Type::B64, B64, add, get_u64, set_u64;
+                    Type::S64, B64, add, get_i64, set_i64;
+                    Type::U32 | Type::B32, B32, add, get_u32, set_u32;
+                    Type::S32, B32, add, get_i32, set_i32;
+                    Type::F32, B32, add, get_f32, set_f32;
+                };
             }
             Instruction::Mul(ty, mode, dst, a, b) => {
-                use RegOperand::*;
-                match (mode, dst, a, b) {
-                    (MulMode::Low, B64(dst), B64(a), B64(b)) => match ty {
-                        Type::U64 | Type::B64 => {
-                            thread.set_u64(dst, thread.get_u64(a) * thread.get_u64(b));
+                use std::ops::Mul;
+                match mode {
+                    MulMode::Low => {
+                        binary_op! {
+                            thread, ty, dst, a, b;
+                            Type::U64 | Type::B64, B64, mul, get_u64, set_u64;
+                            Type::S64, B64, mul, get_i64, set_i64;
+                            Type::U32 | Type::B32, B32, mul, get_u32, set_u32;
+                            Type::S32, B32, mul, get_i32, set_i32;
+                            Type::F32, B32, mul, get_f32, set_f32;
                         }
-                        Type::S64 => {
-                            thread.set_i64(dst, thread.get_i64(a) * thread.get_i64(b));
-                        }
-                        _ => todo!()
                     },
-                    (MulMode::Low, B32(dst), B32(a), B32(b)) => match ty {
-                        Type::U32 | Type::B32 => {
-                            thread.set_u32(dst, thread.get_u32(a) * thread.get_u32(b));
+                    MulMode::High => todo!(),
+                    MulMode::Wide => {
+                        use RegOperand::*;
+                        match (ty, dst, a, b) {
+                            (Type::U32, B64(dst), B32(a), B32(b)) => {
+                                thread
+                                    .set_u64(dst, thread.get_u32(a) as u64 * thread.get_u32(b) as u64);
+                            }
+                            (Type::S32, B64(dst), B32(a), B32(b)) => {
+                                thread
+                                    .set_i64(dst, thread.get_i32(a) as i64 * thread.get_i32(b) as i64);
+                            }
+                            _ => todo!()
                         }
-                        Type::S32 => {
-                            thread.set_i32(dst, thread.get_i32(a) * thread.get_i32(b));
-                        }
-                        Type::F32 => {
-                            thread.set_f32(dst, thread.get_f32(a) * thread.get_f32(b));
-                        }
-                        _ => todo!(),
                     },
-                    (MulMode::Wide, B64(dst), B32(a), B32(b)) => match ty {
-                        Type::U32 => {
-                            thread
-                                .set_u64(dst, thread.get_u32(a) as u64 * thread.get_u32(b) as u64);
-                        }
-                        Type::S32 => {
-                            thread
-                                .set_i64(dst, thread.get_i32(a) as i64 * thread.get_i32(b) as i64);
-                        }
-                        _ => todo!(),
-                    },
-                    _ => todo!(),
                 }
             }
             Instruction::Or(ty, dst, a, b) => {
-                use RegOperand::*;
-                match (dst, a, b) {
-                    (old @ Pred(dst), Pred(a), Pred(b)) => {
-                        if ty != Type::Pred {
-                            return Err(VmError::InvalidOperand(inst, old));
-                        }
-                        thread.set_pred(dst, thread.get_pred(a) | thread.get_pred(b));
-                    }
-                    _ => todo!()
-                }
+                use std::ops::BitOr;
+                binary_op! {
+                    thread, ty, dst, a, b;
+                    Type::Pred, Pred, bitor, get_pred, set_pred;
+                    Type::U64 | Type::B64 | Type::S64, B64, bitor, get_u64, set_u64;
+                    Type::U32 | Type::B32 | Type::S64, B32, bitor, get_u32, set_u32;
+                };
             }
             Instruction::And(ty, dst, a, b) => {
-                use RegOperand::*;
-                match (dst, a, b) {
-                    (B64(dst), B64(a), B64(b)) => {
-                        match ty {
-                            Type::B64 => {
-                                thread.set_u64(dst, thread.get_u64(a) & thread.get_u64(b));
-                            }
-                            _ => todo!()
-                        }
-                    }
-                    _ => todo!()
-                }
+                use std::ops::BitAnd;
+                binary_op! {
+                    thread, ty, dst, a, b;
+                    Type::Pred, Pred, bitand, get_pred, set_pred;
+                    Type::U64 | Type::B64, B64, bitand, get_u64, set_u64;
+                    Type::U32 | Type::B32, B32, bitand, get_u32, set_u32;
+                };
             }
             Instruction::Neg(ty, dst, src) => {
-                use RegOperand::*;
-                match (dst, src) {
-                    (B64(dst), B64(src)) => {
-                        match ty {
-                            Type::S64 => {
-                                thread.set_i64(dst, -thread.get_i64(src));
-                            }
-                            _ => todo!()
-                        }
-                    }
-                    _ => todo!()
-                }
+                use std::ops::Neg;
+                unary_op! {
+                    thread, ty, dst, src;
+                    Type::S64, B64, neg, get_i64, set_i64;
+                    Type::S32, B32, neg, get_i32, set_i32;
+                    Type::F32, B32, neg, get_f32, set_f32;
+                };
             }
             Instruction::ShiftLeft(ty, dst, a, b) => {
-                use RegOperand::*;
-                match (dst, a, b) {
-                    (B64(dst), B64(a), B64(b)) => match ty {
-                        Type::U64 | Type::B64 => {
-                            thread.set_u64(dst, thread.get_u64(a) << thread.get_u64(b));
-                        }
-                        _ => todo!(),
-                    },
-                    (B32(dst), B32(a), B32(b)) => match ty {
-                        Type::U32 | Type::B32 => {
-                            thread.set_u32(dst, thread.get_u32(a) << thread.get_u32(b));
-                        }
-                        _ => todo!(),
-                    },
-                    _ => todo!(),
-                }
+                use std::ops::Shl;
+                binary_op! {
+                    thread, ty, dst, a, b;
+                    Type::U64 | Type::B64, B64, shl, get_u64, set_u64;
+                    Type::B32, B32, shl, get_u32, set_u32;
+                };
             }
             Instruction::Convert {
                 dst_type,
@@ -975,7 +1008,15 @@ impl Context {
     }
 
     pub fn run(&mut self, params: LaunchParams, args: &[Argument]) -> VmResult<()> {
-        let desc = self.descriptors[params.func_id];
+        let desc = match params.func_id {
+            FuncIdent::Name(s) => {
+                let Some(Symbol::Function(i)) = self.symbol_map.get(s) else {
+                    return Err(VmError::InvalidFunctionName(s.to_string()));
+                };
+                self.descriptors[*i]
+            },
+            FuncIdent::Id(i) => *self.descriptors.get(i).ok_or(VmError::InvalidFunctionId(i))?,
+        };
         let arg_size: usize = args
             .iter()
             .map(|arg| match arg {
@@ -1092,7 +1133,7 @@ mod test {
         ctx.write(a, 0, &1u64.to_ne_bytes());
         ctx.write(b, 0, &2u64.to_ne_bytes());
         ctx.run(
-            LaunchParams::new().func(0).grid1d(1).block1d(1),
+            LaunchParams::func_id(0).grid1d(1).block1d(1),
             &[Argument::Ptr(a), Argument::Ptr(b), Argument::Ptr(c)],
         )
         .unwrap();
@@ -1212,7 +1253,7 @@ mod test {
         ctx.write(b, 0, bytemuck::cast_slice(&data_b));
 
         ctx.run(
-            LaunchParams::new().func(0).grid1d(1).block1d(N as u32),
+            LaunchParams::func_id(0).grid1d(1).block1d(N as u32),
             &[Argument::Ptr(a), Argument::Ptr(b), Argument::Ptr(c)],
         )
         .unwrap();

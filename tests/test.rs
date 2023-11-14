@@ -1,4 +1,4 @@
-use ptoxide::{Context, LaunchParams, Argument};
+use ptoxide::{Argument, Context, LaunchParams};
 
 #[test]
 fn add_simple() {
@@ -19,12 +19,8 @@ fn add_simple() {
     ctx.write(b, 0, bytemuck::cast_slice(&data_b));
 
     ctx.run(
-        LaunchParams::new().func(0).grid1d(1).block1d(N as u32),
-        &[
-            Argument::Ptr(a),
-            Argument::Ptr(b),
-            Argument::Ptr(c),
-        ],
+        LaunchParams::func_id(0).grid1d(1).block1d(N as u32),
+        &[Argument::Ptr(a), Argument::Ptr(b), Argument::Ptr(c)],
     )
     .unwrap();
 
@@ -55,8 +51,7 @@ fn add() {
     ctx.write(b, 0, bytemuck::cast_slice(&data_b));
 
     ctx.run(
-        LaunchParams::new()
-            .func(0)
+        LaunchParams::func_id(0)
             .grid1d(GRID_SIZE)
             .block1d(BLOCK_SIZE),
         &[
@@ -100,15 +95,10 @@ fn transpose() {
     ctx.write(a, 0, bytemuck::cast_slice(&data_a));
 
     ctx.run(
-        LaunchParams::new()
-            .func(0)
+        LaunchParams::func_id(0)
             .grid2d(GRID_SIZE, GRID_SIZE)
             .block2d(BLOCK_SIZE, BLOCK_SIZE),
-        &[
-            Argument::Ptr(a),
-            Argument::Ptr(b),
-            Argument::U64(N as u64),
-        ],
+        &[Argument::Ptr(a), Argument::Ptr(b), Argument::U64(N as u64)],
     )
     .unwrap();
 
@@ -145,8 +135,7 @@ fn gemm() {
     ctx.write(b, 0, bytemuck::cast_slice(&data_b));
 
     ctx.run(
-        LaunchParams::new()
-            .func(0)
+        LaunchParams::func_id(0)
             .grid2d(GRID_SIZE, GRID_SIZE)
             .block2d(BLOCK_SIZE, BLOCK_SIZE),
         &[
