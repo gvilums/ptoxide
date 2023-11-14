@@ -128,25 +128,21 @@ struct FuncCodegenState<'a> {
     param_stack_offset: usize,
     label_map: HashMap<String, usize>,
     jump_map: Vec<String>,
-    tmp_b64: vm::RegOperand,
 }
 
 impl<'a> FuncCodegenState<'a> {
     pub fn new(parent: &'a CompiledModule) -> Self {
-        let mut regs = vm::RegDesc::default();
-        let tmp_b64 = vm::RegOperand::B64(regs.alloc_b64());
         Self {
             parent,
             ident: String::new(),
             instructions: Vec::new(),
             var_map: VariableMap::new(),
-            regs: regs,
+            regs: vm::RegDesc::default(),
             stack_size: 0,
             param_stack_offset: 0,
             shared_size: 0,
             label_map: HashMap::new(),
             jump_map: Vec::new(),
-            tmp_b64,
         }
     }
 
@@ -466,30 +462,18 @@ impl<'a> FuncCodegenState<'a> {
                 let dst_reg = self.get_dst_reg(ty, dst)?;
                 let src_reg = match src {
                     Operand::Variable(ident) => {
-                        match self.var_map.get(ident).cloned() {
-                            Some(Variable::Register(reg)) => reg,
+                        match self.var_map.get(ident).cloned().ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
+                            Variable::Register(reg) => reg,
                             // this is an LEA operation, not just a normal mov 
-                            Some(Variable::Stack(offset)) => {
-                                // let imm = self.construct_immediate(ast::Type::U64, ast::Immediate::UInt64(offset as u64))?;
-                                // self.instructions.push(vm::Instruction::Move(ast::Type::U64, dst_reg, vm::RegOperand::Special(ast::SpecialReg::StackPtr)));
-                                // self.instructions.push(vm::Instruction::Add(ast::Type::S64, dst_reg, dst_reg, imm));
-
-                                let addr = vm::AddrOperand::StackRelative(offset);
-                                self.instructions.push(vm::Instruction::LoadEffectiveAddress(ty, dst_reg, addr));
+                            Variable::Stack(offset) => {
+                                let imm = self.construct_immediate(ast::Type::U64, ast::Immediate::UInt64(offset as u64))?;
+                                self.instructions.push(vm::Instruction::Move(ast::Type::U64, dst_reg, vm::RegOperand::Special(ast::SpecialReg::StackPtr)));
+                                self.instructions.push(vm::Instruction::Add(ast::Type::S64, dst_reg, dst_reg, imm));
                                 return Ok(())
                             }
-                            Some(Variable::Absolute(addr)) => {
-                                // self.instructions.push(vm::Instruction::Const(dst_reg, vm::Constant::U64(addr as u64)));
-
-                                let addr = vm::AddrOperand::Absolute(addr);
-                                self.instructions.push(vm::Instruction::LoadEffectiveAddress(ty, dst_reg, addr));
+                            Variable::Absolute(addr) => {
+                                self.instructions.push(vm::Instruction::Const(dst_reg, vm::Constant::U64(addr as u64)));
                                 return Ok(())
-                            }
-                            // undefined variable
-                            None => {
-                                return Err(CompilationError::UndefinedSymbol(
-                                    ident.to_string(),
-                                ))
                             }
                         }
                     },

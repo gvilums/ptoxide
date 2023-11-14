@@ -139,15 +139,6 @@ pub enum Constant {
 
 
 #[derive(Clone, Copy, Debug)]
-pub enum AddrOperand {
-    Absolute(usize),
-    AbsoluteReg(usize, RegOperand),
-    StackRelative(isize),
-    StackRelativeReg(isize, RegOperand),
-    RegisterRelative(RegOperand, isize),
-}
-
-#[derive(Clone, Copy, Debug)]
 pub enum Instruction {
     Load(StateSpace, RegOperand, RegOperand),
     Store(StateSpace, RegOperand, RegOperand),
@@ -158,7 +149,6 @@ pub enum Instruction {
         src: RegOperand,
     },
     Move(Type, RegOperand, RegOperand),
-    LoadEffectiveAddress(Type, RegOperand, AddrOperand),
     Const(RegOperand, Constant),
     Add(Type, RegOperand, RegOperand, RegOperand),
     Sub(Type, RegOperand, RegOperand, RegOperand),
@@ -418,29 +408,6 @@ impl ThreadState {
             RegOperand::B32(r) => Ok(self.get_i32(r) as usize),
             RegOperand::B64(r) => Ok(self.get_i64(r) as usize),
             RegOperand::B128(r) => Ok(self.get_i128(r) as usize),
-        }
-    }
-
-    fn resolve_address(&self, addr: AddrOperand) -> VmResult<usize> {
-        match addr {
-            AddrOperand::Absolute(addr) => Ok(addr),
-            AddrOperand::AbsoluteReg(addr, reg) => {
-                let offset = self.read_reg_signed(reg)?;
-                Ok((addr as isize + offset) as usize)
-            }
-            AddrOperand::StackRelative(offset) => {
-                let frame_size = self.stack_frames.last().unwrap().frame_size as isize;
-                Ok((self.stack_data.len() as isize - frame_size + offset) as usize)
-            }
-            AddrOperand::StackRelativeReg(offset, reg) => {
-                let frame_size = self.stack_frames.last().unwrap().frame_size as isize;
-                let reg_offset = self.read_reg_signed(reg)?;
-                Ok((self.stack_data.len() as isize - frame_size + offset + reg_offset) as usize)
-            }
-            AddrOperand::RegisterRelative(reg, offset) => {
-                let reg_base = self.read_reg_signed(reg)?;
-                Ok((reg_base + offset) as usize)
-            }
         }
     }
 
@@ -941,18 +908,9 @@ impl Context {
                     (B32(dst), Constant::U32(value)) => thread.set_u32(dst, value),
                     (B32(dst), Constant::S32(value)) => thread.set_i32(dst, value),
                     (B32(dst), Constant::F32(value)) => thread.set_f32(dst, value),
-                    _ => todo!(),
-                }
-            }
-            Instruction::LoadEffectiveAddress(ty, dst, addr) => {
-                let addr = thread.resolve_address(addr)?;
-                match (ty, dst) {
-                    (_, RegOperand::B64(dst)) => {
-                        thread.set_u64(dst, addr as u64);
-                    }
-                    (_, RegOperand::B32(dst)) => {
-                        thread.set_u32(dst, addr as u32);
-                    }
+
+                    // temporary fix for operations that move address of local into register
+                    (B32(dst), Constant::U64(value)) => thread.set_u32(dst, value as u32),
                     _ => todo!(),
                 }
             }
