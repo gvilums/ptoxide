@@ -1,8 +1,6 @@
 use logos::{Lexer, Logos};
 use thiserror::Error;
 
-use crate::vm;
-
 fn lex_reg_multiplicity(lex: &mut Lexer<Token>) -> Result<u32, LexError> {
     let mut s = lex.slice();
     s = &s[1..s.len() - 1];
@@ -39,7 +37,7 @@ fn lex_float32_constant(lex: &mut Lexer<Token>) -> Result<f32, LexError> {
     Ok(f32::from_bits(val))
 }
 
-fn lex_float64_constant(lex: &mut Lexer<Token>) -> Option<f64> {
+fn lex_float64_constant(_lex: &mut Lexer<Token>) -> Option<f64> {
     todo!()
 }
 
@@ -437,18 +435,6 @@ pub enum StateSpace {
     Parameter,
 }
 
-impl StateSpace {
-    pub fn to_vm(&self) -> Option<vm::StateSpace> {
-        use StateSpace::*;
-        Some(match self {
-            Global | Constant => vm::StateSpace::Global,
-            Local | Parameter => vm::StateSpace::Stack,
-            Shared => vm::StateSpace::Shared,
-            Register => return None,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     B128,
@@ -470,15 +456,6 @@ pub enum Type {
     F16,
     Pred,
 }
-
-pub enum TypeSize {
-    One,
-    Two,
-    Four,
-    Eight,
-    Sixteen
-}
-
 
 impl Type {
     pub fn size(&self) -> usize {

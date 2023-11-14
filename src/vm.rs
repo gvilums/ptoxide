@@ -24,24 +24,10 @@ use crate::ast::Type;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Constant {
-    B128(u128),
-    B64(u64),
-    B32(u32),
-    B16(u16),
-    B8(u8),
     U64(u64),
-    U32(u32),
-    U16(u16),
-    U8(u8),
     S64(i64),
-    S32(i32),
-    S16(i16),
-    S8(i8),
     F64(f64),
     F32(f32),
-    F16x2(f32, f32),
-    F16(f32),
-    Pred(bool),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -131,7 +117,7 @@ pub struct FuncFrameDesc {
     pub shared_size: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Context {
     global_mem: Vec<u8>,
     instructions: Vec<Instruction>,
@@ -252,14 +238,14 @@ impl ThreadState {
         // get_i128, i128;
     );
     int_setters!(
-        set_u8, u8;
+        // set_u8, u8;
         set_u16, u16;
         set_u32, u32;
         set_u64, u64;
         set_u128, u128;
 
-        set_i8, i8;
-        set_i16, i16;
+        // set_i8, i8;
+        // set_i16, i16;
         set_i32, i32;
         set_i64, i64;
         // set_i128, i128;
@@ -596,7 +582,7 @@ impl Context {
             for y in 0..ntid.1 {
                 for z in 0..ntid.2 {
                     let mut state = ThreadState::new(nctaid, ctaid, ntid, (x, y, z));
-                    state.stack_data.extend_from_slice(&init_stack);
+                    state.stack_data.extend_from_slice(init_stack);
                     state.frame_setup(desc);
                     runnable.push(state);
                 }
@@ -760,22 +746,8 @@ impl Context {
             Instruction::Const(dst, value) => match value {
                 Constant::U64(value) => thread.set_u64(dst, value),
                 Constant::S64(value) => thread.set_i64(dst, value),
-                Constant::U32(value) => thread.set_u32(dst, value),
-                Constant::S32(value) => thread.set_i32(dst, value),
                 Constant::F32(value) => thread.set_f32(dst, value),
-                Constant::B128(value) => thread.set_u128(dst, value),
-                Constant::B64(value) => thread.set_u64(dst, value),
-                Constant::B32(value) => thread.set_u32(dst, value),
-                Constant::B16(value) => thread.set_u16(dst, value),
-                Constant::B8(value) => thread.set_u8(dst, value),
-                Constant::U16(value) => thread.set_u16(dst, value),
-                Constant::U8(value) => thread.set_u8(dst, value),
-                Constant::S16(value) => thread.set_i16(dst, value),
-                Constant::S8(value) => thread.set_i8(dst, value),
                 Constant::F64(value) => thread.set_f64(dst, value),
-                Constant::Pred(value) => thread.set_pred(dst, value),
-                Constant::F16x2(_, _) => todo!(),
-                Constant::F16(_) => todo!(),
             },
             Instruction::SetPredicate(ty, op, dst, a, b) => {
                 comparison_op! {

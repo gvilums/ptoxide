@@ -4,16 +4,18 @@ mod ast;
 
 pub use vm::{Context, Argument, LaunchParams};
 
-use pest_derive::Parser;
-
-#[derive(Parser)]
-#[grammar = "grammar.pest"] // relative to project `src`
-struct MyParser;
-
 #[test]
 fn parser(){
+    mod parser {
+        use pest_derive::Parser;
+
+        #[derive(Parser)]
+        #[grammar = "grammar.pest"] // relative to project `src`
+        pub struct MyParser;
+    }
+
     use pest::Parser;
-    let res = MyParser::parse(Rule::ident_list, "a1 b2").unwrap();
+    let res = parser::MyParser::parse(parser::Rule::ident_list, "a1 b2").unwrap();
     for pair in res {
         println!("Rule:    {:?}", pair.as_rule());
         println!("Span:    {:?}", pair.as_span());

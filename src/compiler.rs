@@ -233,7 +233,7 @@ impl<'a> FuncCodegenState<'a> {
 
     fn construct_immediate(
         &mut self,
-        ty: ast::Type,
+        _ty: ast::Type,
         imm: ast::Immediate,
     ) -> Result<vm::GenericReg, CompilationError> {
         let vmconst = match imm {
@@ -263,7 +263,7 @@ impl<'a> FuncCodegenState<'a> {
                 .construct_immediate(ty, *imm)
                 .map(|r| r.into()),
             Operand::SpecialReg(special) => Ok((*special).into()),
-            Operand::Address(_) => todo!(),
+            op @ Operand::Address(_) => Err(CompilationError::InvalidOperand(op.clone())),
         }
     }
 
