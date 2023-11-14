@@ -926,10 +926,10 @@ impl Context {
             Instruction::LoadEffectiveAddress(ty, dst, addr) => {
                 let addr = thread.resolve_address(addr)?;
                 match (ty, dst) {
-                    (Type::U64 | Type::B64 | Type::S64, RegOperand::B64(dst)) => {
+                    (_, RegOperand::B64(dst)) => {
                         thread.set_u64(dst, addr as u64);
                     }
-                    (Type::U32 | Type::B32 | Type::S32, RegOperand::B32(dst)) => {
+                    (_, RegOperand::B32(dst)) => {
                         thread.set_u32(dst, addr as u32);
                     }
                     _ => todo!(),
