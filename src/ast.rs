@@ -505,6 +505,7 @@ pub enum Vector {
 
 #[derive(Debug, Clone, Copy)]
 pub enum SpecialReg {
+    StackPtr,
     ThreadId,
     ThreadIdX,
     ThreadIdY,
@@ -565,7 +566,8 @@ pub enum Operand {
 pub enum Immediate {
     Float32(f32),
     Float64(f64),
-    Integer(i64),
+    Int64(i64),
+    UInt64(u64),
 }
 
 #[derive(Debug, Clone)]
@@ -1061,7 +1063,7 @@ fn parse_operand(mut scanner: Scanner) -> ParseResult<Operand> {
     }
     // then fall back to other options
     let operand = match scanner.must_pop()? {
-        Token::IntegerConst(i) => Operand::Immediate(Immediate::Integer(*i)),
+        Token::IntegerConst(i) => Operand::Immediate(Immediate::Int64(*i)),
         Token::Float64Const(f) => Operand::Immediate(Immediate::Float64(*f)),
         Token::Float32Const(f) => Operand::Immediate(Immediate::Float32(*f)),
         Token::Identifier(s) => {

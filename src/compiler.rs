@@ -128,21 +128,25 @@ struct FuncCodegenState<'a> {
     param_stack_offset: usize,
     label_map: HashMap<String, usize>,
     jump_map: Vec<String>,
+    tmp_b64: vm::RegOperand,
 }
 
 impl<'a> FuncCodegenState<'a> {
     pub fn new(parent: &'a CompiledModule) -> Self {
+        let mut regs = vm::RegDesc::default();
+        let tmp_b64 = vm::RegOperand::B64(regs.alloc_b64());
         Self {
             parent,
             ident: String::new(),
             instructions: Vec::new(),
             var_map: VariableMap::new(),
-            regs: vm::RegDesc::default(),
+            regs: regs,
             stack_size: 0,
             param_stack_offset: 0,
             shared_size: 0,
             label_map: HashMap::new(),
             jump_map: Vec::new(),
+            tmp_b64,
         }
     }
 
@@ -243,7 +247,7 @@ impl<'a> FuncCodegenState<'a> {
         let opref = match ty {
             U32 | B32 => {
                 let reg = RegOperand::B32(self.regs.alloc_b32());
-                let ast::Immediate::Integer(val) = imm else {
+                let ast::Immediate::Int64(val) = imm else {
                     return Err(CompilationError::InvalidImmediateType);
                 };
                 self.instructions
@@ -252,7 +256,7 @@ impl<'a> FuncCodegenState<'a> {
             }
             S32 => {
                 let reg = RegOperand::B32(self.regs.alloc_b32());
-                let ast::Immediate::Integer(val) = imm else {
+                let ast::Immediate::Int64(val) = imm else {
                     return Err(CompilationError::InvalidImmediateType);
                 };
                 self.instructions
@@ -261,7 +265,7 @@ impl<'a> FuncCodegenState<'a> {
             }
             U64 | B64 => {
                 let reg = RegOperand::B64(self.regs.alloc_b64());
-                let ast::Immediate::Integer(val) = imm else {
+                let ast::Immediate::Int64(val) = imm else {
                     return Err(CompilationError::InvalidImmediateType);
                 };
                 self.instructions
@@ -270,7 +274,7 @@ impl<'a> FuncCodegenState<'a> {
             }
             S64 => {
                 let reg = RegOperand::B64(self.regs.alloc_b64());
-                let ast::Immediate::Integer(val) = imm else {
+                let ast::Immediate::Int64(val) = imm else {
                     return Err(CompilationError::InvalidImmediateType);
                 };
                 self.instructions
@@ -367,33 +371,43 @@ impl<'a> FuncCodegenState<'a> {
         Ok([dst_reg, src1_reg, src2_reg, src3_reg])
     }
 
-    fn resolve_addr_operand(&self, operand: &ast::AddressOperand) -> Result<vm::AddrOperand, CompilationError> {
+    fn resolve_addr_operand(&mut self, operand: &ast::AddressOperand) -> Result<vm::RegOperand, CompilationError> {
         use ast::AddressOperand;
-        use vm::AddrOperand;
         Ok(match operand {
             AddressOperand::Address(ident) => {
-                match self.var_map.get(ident).ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
+                match self.var_map.get(ident).cloned().ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
                     Variable::Register(reg) => {
-                        AddrOperand::RegisterRelative(*reg, 0)
+                        reg
                     }
                     Variable::Absolute(addr) => {
-                        AddrOperand::Absolute(*addr)
+                        self.construct_immediate(ast::Type::U64, ast::Immediate::UInt64(addr as u64))?
                     }
                     Variable::Stack(addr) => {
-                        AddrOperand::StackRelative(*addr)
+                        let dst = vm::RegOperand::B64(self.regs.alloc_b64());
+                        let imm = self.construct_immediate(ast::Type::S64, ast::Immediate::Int64(addr as i64))?;
+                        self.instructions.push(vm::Instruction::Move(ast::Type::U64, dst, vm::RegOperand::Special(ast::SpecialReg::StackPtr)));
+                        self.instructions.push(vm::Instruction::Add(ast::Type::S64, dst, dst, imm));
+                        dst
                     }
                 }
             },
             AddressOperand::AddressOffset(ident, offset) => {
-                match self.var_map.get(ident).ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
+                match self.var_map.get(ident).cloned().ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))? {
                     Variable::Register(reg) => {
-                        AddrOperand::RegisterRelative(*reg, *offset as isize)
+                        let dst = vm::RegOperand::B64(self.regs.alloc_b64());
+                        let imm = self.construct_immediate(ast::Type::S64, ast::Immediate::Int64(*offset))?;
+                        self.instructions.push(vm::Instruction::Add(ast::Type::S64, dst, reg, imm));
+                        dst
                     }
                     Variable::Absolute(addr) => {
-                        AddrOperand::Absolute(*addr + *offset as usize)
+                        self.construct_immediate(ast::Type::U64, ast::Immediate::UInt64(addr as u64 + *offset as u64))?
                     }
                     Variable::Stack(addr) => {
-                        AddrOperand::StackRelative(*addr + *offset as isize)
+                        let dst = vm::RegOperand::B64(self.regs.alloc_b64());
+                        let imm = self.construct_immediate(ast::Type::S64, ast::Immediate::Int64(addr as i64 + *offset))?;
+                        self.instructions.push(vm::Instruction::Move(ast::Type::U64, dst, vm::RegOperand::Special(ast::SpecialReg::StackPtr)));
+                        self.instructions.push(vm::Instruction::Add(ast::Type::S64, dst, dst, imm));
+                        dst
                     }
                 }
             },
@@ -452,16 +466,22 @@ impl<'a> FuncCodegenState<'a> {
                 let dst_reg = self.get_dst_reg(ty, dst)?;
                 let src_reg = match src {
                     Operand::Variable(ident) => {
-                        match self.var_map.get(ident) {
-                            Some(Variable::Register(reg)) => *reg,
+                        match self.var_map.get(ident).cloned() {
+                            Some(Variable::Register(reg)) => reg,
                             // this is an LEA operation, not just a normal mov 
                             Some(Variable::Stack(offset)) => {
-                                let addr = vm::AddrOperand::StackRelative(*offset);
+                                // let imm = self.construct_immediate(ast::Type::U64, ast::Immediate::UInt64(offset as u64))?;
+                                // self.instructions.push(vm::Instruction::Move(ast::Type::U64, dst_reg, vm::RegOperand::Special(ast::SpecialReg::StackPtr)));
+                                // self.instructions.push(vm::Instruction::Add(ast::Type::S64, dst_reg, dst_reg, imm));
+
+                                let addr = vm::AddrOperand::StackRelative(offset);
                                 self.instructions.push(vm::Instruction::LoadEffectiveAddress(ty, dst_reg, addr));
                                 return Ok(())
                             }
                             Some(Variable::Absolute(addr)) => {
-                                let addr = vm::AddrOperand::Absolute(*addr);
+                                // self.instructions.push(vm::Instruction::Const(dst_reg, vm::Constant::U64(addr as u64)));
+
+                                let addr = vm::AddrOperand::Absolute(addr);
                                 self.instructions.push(vm::Instruction::LoadEffectiveAddress(ty, dst_reg, addr));
                                 return Ok(())
                             }
