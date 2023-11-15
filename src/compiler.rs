@@ -658,7 +658,7 @@ impl<'a> FuncCodegenState<'a> {
 
     pub fn compile_ast(&mut self, func: ast::Function) -> Result<(), CompilationError> {
         self.ident = func.ident;
-        let ast::Statement::Grouping(body) = *func.body else {
+        let ast::Statement::Grouping(mut body) = *func.body else {
             todo!()
         };
 
@@ -668,7 +668,9 @@ impl<'a> FuncCodegenState<'a> {
         };
         let mut bblocks = Vec::new();
         let mut var_decls = Vec::new();
-        for statement in body {
+
+        body.reverse();
+        while let Some(statement) = body.pop() {
             use ast::{Directive, Statement};
 
             match statement {
@@ -682,7 +684,12 @@ impl<'a> FuncCodegenState<'a> {
                     std::mem::swap(&mut block, &mut block2);
                     bblocks.push(block2);
                 }
-                Statement::Grouping(_) => todo!(),
+                // TODO: groupings usually interact with the scope of variables,
+                // which is completely ignored here. Should be fixed in the future
+                Statement::Grouping(mut inner) => {
+                    inner.reverse();
+                    body.extend(inner);
+                }
                 // ignore miscelaneous directives
                 Statement::Directive(_) => {}
             }
