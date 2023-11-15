@@ -93,12 +93,13 @@ pub struct IPtr(pub usize);
 struct FrameMeta {
     return_addr: IPtr,
     frame_size: usize,
+    num_regs: usize,
 }
 
 #[derive(Debug, Clone)]
 struct ThreadState {
     iptr: IPtr,
-    regs: Vec<Vec<u128>>,
+    regs: Vec<u128>,
     stack_data: Vec<u8>,
     stack_frames: Vec<FrameMeta>,
     nctaid: (u32, u32, u32),
@@ -132,7 +133,7 @@ macro_rules! byte_reg_funcs {
             }
 
             fn $set(&mut self, reg: GenericReg, value: [u8; $n]) {
-                self.regs.last_mut().unwrap()[reg.0] = <$helper_type>::from_ne_bytes(value) as u128;
+                self.set(reg, <$helper_type>::from_ne_bytes(value) as u128);
             }
         )*
     };
@@ -142,10 +143,7 @@ macro_rules! int_getters {
     ($($get:ident, $t2:ty);* $(;)?) => {
         $(
             fn $get(&self, reg: RegOperand) -> $t2 {
-                match reg {
-                    RegOperand::Generic(reg) => self.regs.last().unwrap()[reg.0] as $t2,
-                    RegOperand::Special(reg) => self.get_special(reg) as $t2,
-                }
+                self.get(reg) as $t2
             }
         )*
     };
@@ -155,7 +153,7 @@ macro_rules! int_setters {
     ($($set:ident, $t2:ty);* $(;)?) => {
         $(
             fn $set(&mut self, reg: GenericReg, value: $t2) {
-                self.regs.last_mut().unwrap()[reg.0] = value as u128;
+                self.set(reg, value as u128);
             }
         )*
     };
@@ -181,22 +179,22 @@ impl ThreadState {
     }
 
     fn get(&self, reg: RegOperand) -> u128 {
-        self.get_u128(reg)
-    }
-
-    fn set(&mut self, reg: GenericReg, val: u128) {
-        self.set_u128(reg, val)
-    }
-
-    fn get_pred(&self, reg: RegOperand) -> bool {
         match reg {
-            RegOperand::Generic(reg) => self.regs.last().unwrap()[reg.0] != 0,
-            RegOperand::Special(reg) => self.get_special(reg) != 0,
+            RegOperand::Generic(reg) => {
+                let idx = self.regs.len() - self.stack_frames.last().unwrap().num_regs + reg.0;
+                self.regs[idx]
+            }
+            RegOperand::Special(reg) => self.get_special(reg),
         }
     }
 
-    fn set_pred(&mut self, reg: GenericReg, value: bool) {
-        self.regs.last_mut().unwrap()[reg.0] = value as u128
+    fn set(&mut self, reg: GenericReg, val: u128) {
+        let idx = self.regs.len() - self.stack_frames.last().unwrap().num_regs + reg.0;
+        self.regs[idx] = val;
+    }
+
+    fn get_pred(&self, reg: RegOperand) -> bool {
+        self.get(reg) != 0
     }
 
     fn get_f32(&self, reg: RegOperand) -> f32 {
@@ -237,11 +235,12 @@ impl ThreadState {
         // get_i128, i128;
     );
     int_setters!(
+        set_pred, bool;
         // set_u8, u8;
         set_u16, u16;
         set_u32, u32;
         set_u64, u64;
-        set_u128, u128;
+        // set_u128, u128;
 
         // set_i8, i8;
         // set_i16, i16;
@@ -260,7 +259,7 @@ impl ThreadState {
         let frame_meta = self.stack_frames.pop().unwrap();
         self.stack_data
             .truncate(self.stack_data.len() - frame_meta.frame_size);
-        self.regs.pop();
+        self.regs.resize(self.regs.len() - frame_meta.num_regs, 0);
         self.iptr = frame_meta.return_addr;
     }
 
@@ -268,10 +267,11 @@ impl ThreadState {
         self.stack_frames.push(FrameMeta {
             return_addr: self.iptr,
             frame_size: desc.frame_size,
+            num_regs: desc.num_regs,
         });
         self.stack_data
             .resize(self.stack_data.len() + desc.frame_size, 0);
-        self.regs.push(vec![0; desc.num_regs]);
+        self.regs.resize(self.regs.len() + desc.num_regs, 0);
         self.iptr = desc.iptr;
     }
 
