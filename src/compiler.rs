@@ -365,15 +365,15 @@ impl<'a> FuncCodegenState<'a> {
                     .ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))?
                 {
                     Variable::Register(reg) => {
-                        let imm = self
+                        let dst = self
                             .construct_immediate(ast::Type::S64, ast::Immediate::Int64(*offset))?;
                         self.instructions.push(vm::Instruction::Add(
                             ast::Type::S64,
-                            imm,
-                            imm.into(),
+                            dst,
+                            dst.into(),
                             reg.into(),
                         ));
-                        imm.into()
+                        dst.into()
                     }
                     Variable::Absolute(addr) => self
                         .construct_immediate(
@@ -382,17 +382,17 @@ impl<'a> FuncCodegenState<'a> {
                         )?
                         .into(),
                     Variable::Stack(addr) => {
-                        let imm = self.construct_immediate(
+                        let dst = self.construct_immediate(
                             ast::Type::S64,
                             ast::Immediate::Int64(addr as i64 + *offset),
                         )?;
                         self.instructions.push(vm::Instruction::Add(
                             ast::Type::S64,
-                            imm,
-                            imm.into(),
+                            dst,
+                            dst.into(),
                             ast::SpecialReg::StackPtr.into(),
                         ));
-                        imm.into()
+                        dst.into()
                     }
                 }
             }

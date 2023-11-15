@@ -68,7 +68,6 @@ pub enum Instruction {
     Or(Type, GenericReg, RegOperand, RegOperand),
     And(Type, GenericReg, RegOperand, RegOperand),
     Mul(Type, MulMode, GenericReg, RegOperand, RegOperand),
-    // todo this should just be expressed as sub with 0
     Neg(Type, GenericReg, RegOperand),
     ShiftLeft(Type, GenericReg, RegOperand, RegOperand),
     SetPredicate(Type, PredicateOp, GenericReg, RegOperand, RegOperand),
