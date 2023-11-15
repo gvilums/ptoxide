@@ -565,10 +565,59 @@ impl<'a> FuncCodegenState<'a> {
             }
             Operation::Call {
                 uniform: _,
-                ident: _,
-                ret_param: _,
-                params: _,
-            } => todo!(),
+                ident,
+                ret_param,
+                mut params,
+            } => {
+                let Some(vm::Symbol::Function(descriptor)) = self.parent.symbol_map.get(&ident) else {
+                    return Err(CompilationError::UndefinedSymbol(ident.clone()));
+                };
+
+                if let Some(ret_param) = ret_param {
+                    params.push(ret_param);
+                }
+                for param in &params {
+                    match self.var_map.get(param).cloned().ok_or_else(|| {
+                        CompilationError::UndefinedSymbol(ident.to_string())
+                    })? {
+                        Variable::Register(reg) => {
+                            self.instructions.push(vm::Instruction::PushArg(reg.into()));
+                        },
+                        Variable::Stack(offset) => {
+                            let imm = self.construct_immediate(
+                                ast::Type::S64,
+                                ast::Immediate::Int64(offset as i64),
+                            )?;
+                            self.instructions.push(vm::Instruction::Add(
+                                ast::Type::S64,
+                                imm,
+                                imm.into(),
+                                ast::SpecialReg::StackPtr.into(),
+                            ));
+                            self.instructions.push(vm::Instruction::PushArg(imm.into()));
+                        }
+                        Variable::Absolute(addr) => {
+                            let imm = self.construct_immediate(
+                                ast::Type::U64,
+                                ast::Immediate::UInt64(addr as u64),
+                            )?;
+                            self.instructions.push(vm::Instruction::PushArg(imm.into()));
+                        }
+                    }
+                }
+                self.instructions.push(vm::Instruction::Call(*descriptor));
+                for param in &params {
+                    match self.var_map.get(param).cloned() {
+                        Some(Variable::Register(reg)) => {
+                            self.instructions.push(vm::Instruction::PopArg(Some(reg)));
+                        }
+                        Some(_) => {
+                            self.instructions.push(vm::Instruction::PopArg(None));
+                        }
+                        None => return Err(CompilationError::UndefinedSymbol(param.clone())),
+                    }
+                }
+            },
             Operation::BarrierSync => match instr.operands.as_slice() {
                 [idx] => {
                     let src_reg = self.get_src_reg(ast::Type::U32, idx)?;
@@ -633,9 +682,9 @@ impl<'a> FuncCodegenState<'a> {
                     std::mem::swap(&mut block, &mut block2);
                     bblocks.push(block2);
                 }
-                // ignore pragmas
-                Statement::Directive(Directive::Pragma(_)) => {}
-                _ => todo!(),
+                Statement::Grouping(_) => todo!(),
+                // ignore miscelaneous directives
+                Statement::Directive(_) => {}
             }
         }
 
@@ -720,6 +769,13 @@ mod test {
     #[test]
     fn compile_gemm() {
         let contents = std::fs::read_to_string("kernels/gemm.ptx").unwrap();
+        let module = crate::ast::parse_program(&contents).unwrap();
+        let _ = compile(module).unwrap();
+    }
+
+    #[test]
+    fn compile_fncall() {
+        let contents = std::fs::read_to_string("kernels/fncall.ptx").unwrap();
         let module = crate::ast::parse_program(&contents).unwrap();
         let _ = compile(module).unwrap();
     }

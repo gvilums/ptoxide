@@ -55,22 +55,27 @@ impl From<SpecialReg> for RegOperand {
 pub enum Instruction {
     Load(Type, StateSpace, GenericReg, RegOperand),
     Store(Type, StateSpace, RegOperand, RegOperand),
+    Move(Type, GenericReg, RegOperand),
+    Const(GenericReg, Constant),
     Convert {
         dst_type: Type,
         src_type: Type,
         dst: GenericReg,
         src: RegOperand,
     },
-    Move(Type, GenericReg, RegOperand),
-    Const(GenericReg, Constant),
+
     Add(Type, GenericReg, RegOperand, RegOperand),
     Sub(Type, GenericReg, RegOperand, RegOperand),
     Or(Type, GenericReg, RegOperand, RegOperand),
     And(Type, GenericReg, RegOperand, RegOperand),
+    ShiftLeft(Type, GenericReg, RegOperand, RegOperand),
     Mul(Type, MulMode, GenericReg, RegOperand, RegOperand),
     Neg(Type, GenericReg, RegOperand),
-    ShiftLeft(Type, GenericReg, RegOperand, RegOperand),
-    SetPredicate(Type, PredicateOp, GenericReg, RegOperand, RegOperand),
+
+    PushArg(RegOperand),
+    PopArg(Option<GenericReg>),
+    Call(usize),
+
     BarrierSync {
         idx: RegOperand,
         cnt: Option<RegOperand>,
@@ -79,10 +84,13 @@ pub enum Instruction {
         idx: RegOperand,
         cnt: Option<RegOperand>,
     },
+
     Jump {
         offset: isize,
     },
+    SetPredicate(Type, PredicateOp, GenericReg, RegOperand, RegOperand),
     SkipIf(RegOperand, bool),
+
     Return,
 }
 
@@ -95,6 +103,7 @@ struct FrameMeta {
     frame_size: usize,
     num_regs: usize,
     num_args: usize,
+    reg_base: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -183,7 +192,7 @@ impl ThreadState {
         match reg {
             RegOperand::Generic(reg) => {
                 let meta = self.stack_frames.last().unwrap();
-                let idx = self.regs.len() - meta.num_regs - meta.num_args + reg.0;
+                let idx = meta.reg_base - meta.num_args + reg.0;
                 self.regs[idx]
             }
             RegOperand::Special(reg) => self.get_special(reg),
@@ -192,7 +201,7 @@ impl ThreadState {
 
     fn set(&mut self, reg: GenericReg, val: u128) {
         let meta = self.stack_frames.last().unwrap();
-        let idx = self.regs.len() - meta.num_regs - meta.num_args+ reg.0;
+        let idx = meta.reg_base - meta.num_args + reg.0;
         self.regs[idx] = val;
     }
 
@@ -272,6 +281,7 @@ impl ThreadState {
             frame_size: desc.frame_size,
             num_regs: desc.num_regs,
             num_args: desc.num_args,
+            reg_base: self.regs.len(),
         });
         self.stack_data
             .resize(self.stack_data.len() + desc.frame_size, 0);
@@ -784,6 +794,20 @@ impl Context {
                 }
             }
             Instruction::Return => thread.frame_teardown(),
+            Instruction::PushArg(reg) => {
+                let val = thread.get(reg);
+                thread.regs.push(val);
+            },
+            Instruction::PopArg(reg) => {
+                let val = thread.regs.pop().unwrap();
+                if let Some(reg) = reg {
+                    thread.set(reg, val);
+                }
+            },
+            Instruction::Call(desc_idx) => {
+                let desc = self.descriptors[desc_idx];
+                thread.frame_setup(desc);
+            },
         }
         if thread.stack_frames.is_empty() {
             Ok(ThreadResult::Exit)

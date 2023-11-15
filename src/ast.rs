@@ -1342,8 +1342,8 @@ mod test {
     }
 
     #[test]
-    fn test_parse_test() {
-        let contents = std::fs::read_to_string("kernels/test.ptx").unwrap();
+    fn test_parse_fncall() {
+        let contents = std::fs::read_to_string("kernels/fncall.ptx").unwrap();
         let _ = parse_program(&contents).unwrap();
     }
 
