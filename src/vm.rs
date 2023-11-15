@@ -851,13 +851,29 @@ impl Context {
 
 #[cfg(test)]
 mod test {
-    use crate::ast::Immediate;
-
     use super::*;
 
     #[test]
     fn simple() {
         let prog = vec![
+            Instruction::Load(
+                Type::U64,
+                StateSpace::Stack,
+                GenericReg(0),
+                GenericReg(0).into(),
+            ),
+            Instruction::Load(
+                Type::U64,
+                StateSpace::Stack,
+                GenericReg(1),
+                GenericReg(1).into(),
+            ),
+            Instruction::Load(
+                Type::U64,
+                StateSpace::Stack,
+                GenericReg(2),
+                GenericReg(2).into(),
+            ),
             Instruction::Load(
                 Type::U64,
                 StateSpace::Global,
@@ -913,6 +929,24 @@ mod test {
     #[test]
     fn multiple_threads() {
         let prog = vec![
+            Instruction::Load(
+                Type::U64,
+                StateSpace::Stack,
+                GenericReg(0),
+                GenericReg(0).into(),
+            ),
+            Instruction::Load(
+                Type::U64,
+                StateSpace::Stack,
+                GenericReg(1),
+                GenericReg(1).into(),
+            ),
+            Instruction::Load(
+                Type::U64,
+                StateSpace::Stack,
+                GenericReg(2),
+                GenericReg(2).into(),
+            ),
             Instruction::Const(
                 GenericReg(3),
                 Constant::U64(8),
