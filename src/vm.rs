@@ -281,7 +281,7 @@ impl ThreadState {
     }
 
     fn read_reg_unsigned(&self, reg: RegOperand) -> VmResult<usize> {
-        Ok(self.get_u128(reg) as usize)
+        Ok(self.get(reg) as usize)
     }
 
     fn get_stack_ptr(&self) -> usize {
@@ -851,6 +851,8 @@ impl Context {
 
 #[cfg(test)]
 mod test {
+    use crate::ast::Immediate;
+
     use super::*;
 
     #[test]
@@ -908,125 +910,96 @@ mod test {
         assert_eq!(u64::from_ne_bytes(res), 3);
     }
 
-//     #[test]
-//     fn multiple_threads() {
-//         let prog = vec![
-//             // load arguments into registers
-//             Instruction::Load(
-//                 StateSpace::Stack,
-//                 RegOperand::B64(Reg64 { id: 0 }),
-//                 AddrOperand::StackRelative(-24),
-//             ),
-//             Instruction::Load(
-//                 StateSpace::Stack,
-//                 RegOperand::B64(Reg64 { id: 1 }),
-//                 AddrOperand::StackRelative(-16),
-//             ),
-//             Instruction::Load(
-//                 StateSpace::Stack,
-//                 RegOperand::B64(Reg64 { id: 2 }),
-//                 AddrOperand::StackRelative(-8),
-//             ),
-//             // load thread index
-//             Instruction::Move(
-//                 Type::U32,
-//                 RegOperand::B32(Reg32 { id: 0 }),
-//                 RegOperand::Special(SpecialReg::ThreadIdX),
-//             ),
-//             Instruction::Convert {
-//                 dst_type: Type::U64,
-//                 src_type: Type::U32,
-//                 dst: RegOperand::B64(Reg64 { id: 6 }),
-//                 src: RegOperand::B32(Reg32 { id: 0 }),
-//             },
-//             // multiply thread index by 8 (size of u64)
-//             Instruction::Const(RegOperand::B64(Reg64 { id: 7 }), Constant::U64(8)),
-//             Instruction::Mul(
-//                 Type::U64,
-//                 MulMode::Low,
-//                 RegOperand::B64(Reg64 { id: 6 }),
-//                 RegOperand::B64(Reg64 { id: 6 }),
-//                 RegOperand::B64(Reg64 { id: 7 }),
-//             ),
-//             // offset argument pointers by thread index
-//             Instruction::Add(
-//                 Type::U64,
-//                 RegOperand::B64(Reg64 { id: 0 }),
-//                 RegOperand::B64(Reg64 { id: 0 }),
-//                 RegOperand::B64(Reg64 { id: 6 }),
-//             ),
-//             Instruction::Add(
-//                 Type::U64,
-//                 RegOperand::B64(Reg64 { id: 1 }),
-//                 RegOperand::B64(Reg64 { id: 1 }),
-//                 RegOperand::B64(Reg64 { id: 6 }),
-//             ),
-//             Instruction::Add(
-//                 Type::U64,
-//                 RegOperand::B64(Reg64 { id: 2 }),
-//                 RegOperand::B64(Reg64 { id: 2 }),
-//                 RegOperand::B64(Reg64 { id: 6 }),
-//             ),
-//             // load values from memory (pointed to by offset arguments)
-//             Instruction::Load(
-//                 StateSpace::Global,
-//                 RegOperand::B64(Reg64 { id: 3 }),
-//                 AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 0 }), 0),
-//             ),
-//             Instruction::Load(
-//                 StateSpace::Global,
-//                 RegOperand::B64(Reg64 { id: 4 }),
-//                 AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 1 }), 0),
-//             ),
-//             // add values
-//             Instruction::Add(
-//                 Type::U64,
-//                 RegOperand::B64(Reg64 { id: 5 }),
-//                 RegOperand::B64(Reg64 { id: 3 }),
-//                 RegOperand::B64(Reg64 { id: 4 }),
-//             ),
-//             // store result
-//             Instruction::Store(
-//                 StateSpace::Global,
-//                 RegOperand::B64(Reg64 { id: 5 }),
-//                 AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 2 }), 0),
-//             ),
-//             Instruction::Return,
-//         ];
-//         let desc = vec![FuncFrameDesc {
-//             iptr: IPtr(0),
-//             frame_size: 0,
-//             shared_size: 0,
-//             arg_size: 24,
-//             regs: RegDesc {
-//                 b32_count: 1,
-//                 b64_count: 8,
-//                 ..Default::default()
-//             },
-//         }];
+    #[test]
+    fn multiple_threads() {
+        let prog = vec![
+            Instruction::Const(
+                GenericReg(3),
+                Constant::U64(8),
+            ),
+            Instruction::Mul(
+                Type::U64,
+                MulMode::Low,
+                GenericReg(3),
+                GenericReg(3).into(),
+                SpecialReg::ThreadIdX.into(),
+            ),
+            Instruction::Add(
+                Type::U64,
+                GenericReg(0),
+                GenericReg(0).into(),
+                GenericReg(3).into(),
+            ),
+            Instruction::Add(
+                Type::U64,
+                GenericReg(1),
+                GenericReg(1).into(),
+                GenericReg(3).into(),
+            ),
+            Instruction::Add(
+                Type::U64,
+                GenericReg(2),
+                GenericReg(2).into(),
+                GenericReg(3).into(),
+            ),
+            Instruction::Load(
+                Type::U64,
+                StateSpace::Global,
+                GenericReg(0),
+                GenericReg(0).into(),
+            ),
+            Instruction::Load(
+                Type::U64,
+                StateSpace::Global,
+                GenericReg(1),
+                GenericReg(1).into(),
+            ),
+            // add values
+            Instruction::Add(
+                Type::U64,
+                GenericReg(0),
+                GenericReg(0).into(),
+                GenericReg(1).into(),
+            ),
+            // store result
+            Instruction::Store(
+                Type::U64,
+                StateSpace::Global,
+                GenericReg(0).into(),
+                GenericReg(2).into(),
+            ),
+            Instruction::Return,
+        ];
+        let desc = vec![FuncFrameDesc {
+            iptr: IPtr(0),
+            frame_size: 0,
+            shared_size: 0,
+            num_args: 3,
+            num_regs: 1,
+        }];
 
-//         const ALIGN: usize = std::mem::align_of::<u64>();
-//         const N: usize = 10;
+        const ALIGN: usize = std::mem::align_of::<u64>();
+        const N: usize = 10;
 
-//         let mut ctx = Context::new_raw(prog, desc);
-//         let a = ctx.alloc(8 * N, ALIGN);
-//         let b = ctx.alloc(8 * N, ALIGN);
-//         let c = ctx.alloc(8 * N, ALIGN);
+        let mut ctx = Context::new_raw(prog, desc);
+        let a = ctx.alloc(8 * N, ALIGN);
+        let b = ctx.alloc(8 * N, ALIGN);
+        let c = ctx.alloc(8 * N, ALIGN);
 
-//         let data_a = vec![1u64; N];
-//         let data_b = vec![2u64; N];
-//         ctx.write(a, 0, bytemuck::cast_slice(&data_a));
-//         ctx.write(b, 0, bytemuck::cast_slice(&data_b));
+        let data_a = vec![1u64; N];
+        let data_b = vec![2u64; N];
+        ctx.write(a, 0, bytemuck::cast_slice(&data_a));
+        ctx.write(b, 0, bytemuck::cast_slice(&data_b));
 
-//         ctx.run(
-//             LaunchParams::func_id(0).grid1d(1).block1d(N as u32),
-//             &[Argument::Ptr(a), Argument::Ptr(b), Argument::Ptr(c)],
-//         )
-//         .unwrap();
+        ctx.run(
+            LaunchParams::func_id(0).grid1d(1).block1d(N as u32),
+            &[Argument::Ptr(a), Argument::Ptr(b), Argument::Ptr(c)],
+        )
+        .unwrap();
 
-//         let mut res = vec![0u64; N];
-//         ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
+        let mut res = vec![0u64; N];
+        ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
 
-//         res.iter().for_each(|v| assert_eq!(*v, 3));
-//     }
+        res.iter().for_each(|v| assert_eq!(*v, 3));
+    }
 }
