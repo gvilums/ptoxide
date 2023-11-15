@@ -211,20 +211,39 @@ impl<'a> FuncCodegenState<'a> {
 
     fn handle_params(&mut self, params: Vec<ast::FunctionParam>) -> Result<(), CompilationError> {
         for param in params.iter().rev() {
-            if matches!(param.ty, ast::Type::Pred) {
+            if let ast::Type::Pred = param.ty {
                 // this should raise an error as predicates can only exist in the reg state space
                 todo!()
             }
+            // for now, only handle parameters in the .param state space
+
+            type Ptr = u64;
+            const SIZE: usize = std::mem::size_of::<Ptr>();
+            const ALIGN: usize = std::mem::align_of::<Ptr>();
 
             // account for the size of the parameter
-            self.param_stack_offset += param.ty.size();
+            self.param_stack_offset += SIZE;
 
             // align to required alignment
-            assert!(param.ty.alignment().count_ones() == 1);
             self.param_stack_offset =
-                (self.param_stack_offset + param.ty.alignment() - 1) & !(param.ty.alignment() - 1);
+                (self.param_stack_offset + ALIGN - 1) & !(ALIGN - 1);
 
-            let loc = Variable::Stack(-(self.param_stack_offset as isize));
+            let param_ptr_reg = self.construct_immediate(ast::Type::U64, ast::Immediate::UInt64(
+                self.param_stack_offset as u64,
+            ))?;
+            self.instructions.push(vm::Instruction::Sub(
+                ast::Type::U64,
+                param_ptr_reg,
+                ast::SpecialReg::StackPtr.into(),
+                param_ptr_reg.into(),
+            ));
+            self.instructions.push(vm::Instruction::Load(
+                ast::Type::U64,
+                vm::StateSpace::Stack,
+                param_ptr_reg,
+                param_ptr_reg.into(),
+            ));
+            let loc = Variable::Register(param_ptr_reg);
 
             self.var_map.insert(param.ident.clone(), loc);
         }

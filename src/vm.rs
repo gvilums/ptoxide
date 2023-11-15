@@ -810,8 +810,10 @@ impl Context {
             return Err(VmError::ParamDataSizeMismatch);
         }
 
-        let mut init_stack = Vec::with_capacity(desc.arg_size);
+        let mut init_stack = Vec::with_capacity(desc.arg_size + args.len() * std::mem::size_of::<u64>());
+        let mut stack_locations = Vec::new();
         for arg in args {
+            stack_locations.push(init_stack.len());
             match arg {
                 Argument::Ptr(ptr) => {
                     let ptr_bytes = ptr.0.to_ne_bytes();
@@ -829,6 +831,10 @@ impl Context {
                     init_stack.extend_from_slice(v);
                 }
             }
+        }
+        for loc in stack_locations {
+            let bytes = loc.to_ne_bytes();
+            init_stack.extend_from_slice(&bytes);
         }
         for x in 0..params.grid_dim.0 {
             for y in 0..params.grid_dim.1 {
