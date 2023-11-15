@@ -100,10 +100,9 @@ pub struct IPtr(pub usize);
 #[derive(Clone, Debug)]
 struct FrameMeta {
     return_addr: IPtr,
-    frame_size: usize,
-    num_regs: usize,
     num_args: usize,
     reg_base: usize,
+    stack_base: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -268,20 +267,19 @@ impl ThreadState {
     }
 
     fn frame_teardown(&mut self) {
-        let frame_meta = self.stack_frames.pop().unwrap();
+        let meta = self.stack_frames.pop().unwrap();
         self.stack_data
-            .truncate(self.stack_data.len() - frame_meta.frame_size);
-        self.regs.resize(self.regs.len() - frame_meta.num_regs, 0);
-        self.iptr = frame_meta.return_addr;
+            .truncate(meta.stack_base);
+        self.regs.resize(meta.reg_base + meta.num_args, 0);
+        self.iptr = meta.return_addr;
     }
 
     fn frame_setup(&mut self, desc: FuncFrameDesc) {
         self.stack_frames.push(FrameMeta {
             return_addr: self.iptr,
-            frame_size: desc.frame_size,
-            num_regs: desc.num_regs,
             num_args: desc.num_args,
             reg_base: self.regs.len(),
+            stack_base: self.stack_data.len(),
         });
         self.stack_data
             .resize(self.stack_data.len() + desc.frame_size, 0);
@@ -295,8 +293,7 @@ impl ThreadState {
     }
 
     fn get_stack_ptr(&self) -> usize {
-        let frame_size = self.stack_frames.last().unwrap().frame_size;
-        self.stack_data.len() - frame_size
+        self.stack_frames.last().unwrap().stack_base
     }
 
     fn get_special(&self, s: SpecialReg) -> u128 {
