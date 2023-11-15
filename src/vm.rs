@@ -94,6 +94,7 @@ struct FrameMeta {
     return_addr: IPtr,
     frame_size: usize,
     num_regs: usize,
+    num_args: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -112,7 +113,7 @@ struct ThreadState {
 pub struct FuncFrameDesc {
     pub iptr: IPtr,
     pub frame_size: usize,
-    pub arg_size: usize,
+    pub num_args: usize,
     pub num_regs: usize,
     pub shared_size: usize,
 }
@@ -181,7 +182,8 @@ impl ThreadState {
     fn get(&self, reg: RegOperand) -> u128 {
         match reg {
             RegOperand::Generic(reg) => {
-                let idx = self.regs.len() - self.stack_frames.last().unwrap().num_regs + reg.0;
+                let meta = self.stack_frames.last().unwrap();
+                let idx = self.regs.len() - meta.num_regs - meta.num_args + reg.0;
                 self.regs[idx]
             }
             RegOperand::Special(reg) => self.get_special(reg),
@@ -189,7 +191,8 @@ impl ThreadState {
     }
 
     fn set(&mut self, reg: GenericReg, val: u128) {
-        let idx = self.regs.len() - self.stack_frames.last().unwrap().num_regs + reg.0;
+        let meta = self.stack_frames.last().unwrap();
+        let idx = self.regs.len() - meta.num_regs - meta.num_args+ reg.0;
         self.regs[idx] = val;
     }
 
@@ -268,9 +271,11 @@ impl ThreadState {
             return_addr: self.iptr,
             frame_size: desc.frame_size,
             num_regs: desc.num_regs,
+            num_args: desc.num_args,
         });
         self.stack_data
             .resize(self.stack_data.len() + desc.frame_size, 0);
+        // args were already set up by caller
         self.regs.resize(self.regs.len() + desc.num_regs, 0);
         self.iptr = desc.iptr;
     }
@@ -510,7 +515,7 @@ impl Context {
     }
 
     #[cfg(test)]
-    fn _new_raw(program: Vec<Instruction>, descriptors: Vec<FuncFrameDesc>) -> Context {
+    fn new_raw(program: Vec<Instruction>, descriptors: Vec<FuncFrameDesc>) -> Context {
         Context {
             global_mem: Vec::new(),
             instructions: program,
@@ -573,6 +578,7 @@ impl Context {
         ntid: (u32, u32, u32),
         desc: FuncFrameDesc,
         init_stack: &[u8],
+        init_regs: &[u128],
     ) -> VmResult<()> {
         let mut shared_mem = vec![0u8; desc.shared_size];
 
@@ -582,6 +588,7 @@ impl Context {
                 for z in 0..ntid.2 {
                     let mut state = ThreadState::new(nctaid, ctaid, ntid, (x, y, z));
                     state.stack_data.extend_from_slice(init_stack);
+                    state.regs.extend_from_slice(init_regs);
                     state.frame_setup(desc);
                     runnable.push(state);
                 }
@@ -798,22 +805,14 @@ impl Context {
                 .get(i)
                 .ok_or(VmError::InvalidFunctionId(i))?,
         };
-        let arg_size: usize = args
-            .iter()
-            .map(|arg| match arg {
-                Argument::Ptr(_) | Argument::U64(_) => std::mem::size_of::<u64>(),
-                Argument::U32(_) => std::mem::size_of::<u32>(),
-                Argument::Bytes(v) => v.len(),
-            })
-            .sum();
-        if arg_size != desc.arg_size {
+        if args.len() != desc.num_args {
             return Err(VmError::ParamDataSizeMismatch);
         }
 
-        let mut init_stack = Vec::with_capacity(desc.arg_size + args.len() * std::mem::size_of::<u64>());
-        let mut stack_locations = Vec::new();
+        let mut init_stack = Vec::new();
+        let mut init_regs = Vec::new();
         for arg in args {
-            stack_locations.push(init_stack.len());
+            init_regs.push(init_stack.len() as u128);
             match arg {
                 Argument::Ptr(ptr) => {
                     let ptr_bytes = ptr.0.to_ne_bytes();
@@ -832,10 +831,6 @@ impl Context {
                 }
             }
         }
-        for loc in stack_locations {
-            let bytes = loc.to_ne_bytes();
-            init_stack.extend_from_slice(&bytes);
-        }
         for x in 0..params.grid_dim.0 {
             for y in 0..params.grid_dim.1 {
                 for z in 0..params.grid_dim.2 {
@@ -845,6 +840,7 @@ impl Context {
                         params.block_dim,
                         desc,
                         &init_stack,
+                        &init_regs,
                     )?;
                 }
             }
@@ -853,81 +849,64 @@ impl Context {
     }
 }
 
-// #[cfg(test)]
-// mod test {
-//     use super::*;
+#[cfg(test)]
+mod test {
+    use super::*;
 
-//     #[test]
-//     fn simple() {
-//         let prog = vec![
-//             // load arguments into registers
-//             Instruction::Load(
-//                 StateSpace::Stack,
-//                 RegOperand::B64(Reg64 { id: 0 }),
-//                 AddrOperand::StackRelative(-24),
-//             ),
-//             Instruction::Load(
-//                 StateSpace::Stack,
-//                 RegOperand::B64(Reg64 { id: 1 }),
-//                 AddrOperand::StackRelative(-16),
-//             ),
-//             Instruction::Load(
-//                 StateSpace::Stack,
-//                 RegOperand::B64(Reg64 { id: 2 }),
-//                 AddrOperand::StackRelative(-8),
-//             ),
-//             // load values from memory (pointed to by arguments)
-//             Instruction::Load(
-//                 StateSpace::Global,
-//                 RegOperand::B64(Reg64 { id: 3 }),
-//                 AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 0 }), 0),
-//             ),
-//             Instruction::Load(
-//                 StateSpace::Global,
-//                 RegOperand::B64(Reg64 { id: 4 }),
-//                 AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 1 }), 0),
-//             ),
-//             // add values
-//             Instruction::Add(
-//                 Type::U64,
-//                 RegOperand::B64(Reg64 { id: 5 }),
-//                 RegOperand::B64(Reg64 { id: 3 }),
-//                 RegOperand::B64(Reg64 { id: 4 }),
-//             ),
-//             // store result
-//             Instruction::Store(
-//                 StateSpace::Global,
-//                 RegOperand::B64(Reg64 { id: 5 }),
-//                 AddrOperand::RegisterRelative(RegOperand::B64(Reg64 { id: 2 }), 0),
-//             ),
-//             Instruction::Return,
-//         ];
-//         let desc = vec![FuncFrameDesc {
-//             iptr: IPtr(0),
-//             frame_size: 0,
-//             shared_size: 0,
-//             arg_size: 24,
-//             regs: RegDesc {
-//                 b64_count: 6,
-//                 ..Default::default()
-//             },
-//         }];
-//         const ALIGN: usize = std::mem::align_of::<u64>();
-//         let mut ctx = Context::new_raw(prog, desc);
-//         let a = ctx.alloc(8, ALIGN);
-//         let b = ctx.alloc(8, ALIGN);
-//         let c = ctx.alloc(8, ALIGN);
-//         ctx.write(a, 0, &1u64.to_ne_bytes());
-//         ctx.write(b, 0, &2u64.to_ne_bytes());
-//         ctx.run(
-//             LaunchParams::func_id(0).grid1d(1).block1d(1),
-//             &[Argument::Ptr(a), Argument::Ptr(b), Argument::Ptr(c)],
-//         )
-//         .unwrap();
-//         let mut res = [0u8; 8];
-//         ctx.read(c, 0, &mut res);
-//         assert_eq!(u64::from_ne_bytes(res), 3);
-//     }
+    #[test]
+    fn simple() {
+        let prog = vec![
+            Instruction::Load(
+                Type::U64,
+                StateSpace::Global,
+                GenericReg(0),
+                GenericReg(0).into(),
+            ),
+            Instruction::Load(
+                Type::U64,
+                StateSpace::Global,
+                GenericReg(1),
+                GenericReg(1).into(),
+            ),
+            // add values
+            Instruction::Add(
+                Type::U64,
+                GenericReg(0),
+                GenericReg(0).into(),
+                GenericReg(1).into(),
+            ),
+            // store result
+            Instruction::Store(
+                Type::U64,
+                StateSpace::Global,
+                GenericReg(0).into(),
+                GenericReg(2).into(),
+            ),
+            Instruction::Return,
+        ];
+        let desc = vec![FuncFrameDesc {
+            iptr: IPtr(0),
+            frame_size: 0,
+            shared_size: 0,
+            num_args: 3,
+            num_regs: 0,
+        }];
+        const ALIGN: usize = std::mem::align_of::<u64>();
+        let mut ctx = Context::new_raw(prog, desc);
+        let a = ctx.alloc(8, ALIGN);
+        let b = ctx.alloc(8, ALIGN);
+        let c = ctx.alloc(8, ALIGN);
+        ctx.write(a, 0, &1u64.to_ne_bytes());
+        ctx.write(b, 0, &2u64.to_ne_bytes());
+        ctx.run(
+            LaunchParams::func_id(0).grid1d(1).block1d(1),
+            &[Argument::Ptr(a), Argument::Ptr(b), Argument::Ptr(c)],
+        )
+        .unwrap();
+        let mut res = [0u8; 8];
+        ctx.read(c, 0, &mut res);
+        assert_eq!(u64::from_ne_bytes(res), 3);
+    }
 
 //     #[test]
 //     fn multiple_threads() {
@@ -1050,4 +1029,4 @@ impl Context {
 
 //         res.iter().for_each(|v| assert_eq!(*v, 3));
 //     }
-// }
+}

@@ -126,9 +126,9 @@ struct FuncCodegenState<'a> {
     instructions: Vec<vm::Instruction>,
     var_map: VariableMap,
     num_regs: usize,
+    num_args: usize,
     stack_size: usize,
     shared_size: usize,
-    param_stack_offset: usize,
     label_map: HashMap<String, usize>,
     jump_map: Vec<String>,
 }
@@ -141,8 +141,8 @@ impl<'a> FuncCodegenState<'a> {
             instructions: Vec::new(),
             var_map: VariableMap::new(),
             num_regs: 0,
+            num_args: 0,
             stack_size: 0,
-            param_stack_offset: 0,
             shared_size: 0,
             label_map: HashMap::new(),
             jump_map: Vec::new(),
@@ -150,7 +150,7 @@ impl<'a> FuncCodegenState<'a> {
     }
 
     fn alloc_reg(&mut self) -> vm::GenericReg {
-        let idx = self.num_regs;
+        let idx = self.num_args + self.num_regs;
         self.num_regs += 1;
         vm::GenericReg(idx)
     }
@@ -225,42 +225,15 @@ impl<'a> FuncCodegenState<'a> {
         if let Some(p) = retval {
             params.push(p);
         }
-        for param in params.iter().rev() {
+        self.num_args = params.len();
+        for (idx, param)in params.into_iter().enumerate() {
             if let ast::Type::Pred = param.ty {
                 // this should raise an error as predicates can only exist in the reg state space
                 todo!()
             }
             // for now, only handle parameters in the .param state space
 
-            type Ptr = u64;
-            const SIZE: usize = std::mem::size_of::<Ptr>();
-            const ALIGN: usize = std::mem::align_of::<Ptr>();
-
-            // account for the size of the parameter
-            self.param_stack_offset += SIZE;
-
-            // align to required alignment
-            self.param_stack_offset = (self.param_stack_offset + ALIGN - 1) & !(ALIGN - 1);
-
-            let param_ptr_reg = self.construct_immediate(
-                ast::Type::U64,
-                ast::Immediate::UInt64(self.param_stack_offset as u64),
-            )?;
-            self.instructions.push(vm::Instruction::Sub(
-                ast::Type::U64,
-                param_ptr_reg,
-                ast::SpecialReg::StackPtr.into(),
-                param_ptr_reg.into(),
-            ));
-            self.instructions.push(vm::Instruction::Load(
-                ast::Type::U64,
-                vm::StateSpace::Stack,
-                param_ptr_reg,
-                param_ptr_reg.into(),
-            ));
-            let loc = Variable::Register(param_ptr_reg);
-
-            self.var_map.insert(param.ident.clone(), loc);
+            self.var_map.insert(param.ident, Variable::Register(vm::GenericReg(idx)));
         }
         Ok(())
     }
@@ -699,8 +672,8 @@ impl<'a> FuncCodegenState<'a> {
             iptr: vm::IPtr(self.instructions.len()),
             frame_size: self.stack_size,
             shared_size: self.shared_size,
-            arg_size: self.param_stack_offset,
             num_regs: self.num_regs,
+            num_args: self.num_args,
         };
         Ok((self.ident, frame_desc, self.instructions))
     }
