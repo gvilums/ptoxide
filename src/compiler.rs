@@ -163,29 +163,37 @@ impl<'a> FuncCodegenState<'a> {
                 todo!()
             }
         }
-        match decl.state_space {
-            StateSpace::Register => {
-                if !decl.array_bounds.is_empty() {
-                    todo!("array bounds not supported on register variables")
-                }
-                let reg = self.alloc_reg();
-                self.var_map.insert(decl.ident, Variable::Register(reg));
+        if let StateSpace::Register = decl.state_space {
+            if !decl.array_bounds.is_empty() {
+                todo!("array bounds not supported on register variables")
             }
+            let reg = self.alloc_reg();
+            self.var_map.insert(decl.ident, Variable::Register(reg));
+            return Ok(())
+        }
+
+        let count = decl.array_bounds.iter().product::<u32>();
+        let size = decl.ty.size() * count as usize;
+        let align = decl.ty.alignment();
+        assert!(align.count_ones() == 1);
+        // align to required alignment
+
+        match decl.state_space {
             StateSpace::Shared => {
-                let count = decl.array_bounds.iter().product::<u32>();
-                let size = decl.ty.size() * count as usize;
-                let align = decl.ty.alignment();
-                assert!(align.count_ones() == 1);
-                // align to required alignment
                 self.shared_size = (self.shared_size + align - 1) & !(align - 1);
                 let loc = Variable::Absolute(self.shared_size);
                 self.shared_size += size;
                 self.var_map.insert(decl.ident, loc);
             }
+            StateSpace::Local | StateSpace::Parameter => {
+                self.stack_size = (self.stack_size + align - 1) & !(align - 1);
+                let loc = Variable::Stack(self.stack_size as isize);
+                self.stack_size += size;
+                self.var_map.insert(decl.ident, loc);
+            },
             StateSpace::Global => todo!(),
-            StateSpace::Local => todo!(),
             StateSpace::Constant => todo!(),
-            StateSpace::Parameter => todo!(),
+            StateSpace::Register => unreachable!()
         }
         Ok(())
     }
@@ -209,7 +217,14 @@ impl<'a> FuncCodegenState<'a> {
         Ok(())
     }
 
-    fn handle_params(&mut self, params: Vec<ast::FunctionParam>) -> Result<(), CompilationError> {
+    fn handle_params(
+        &mut self,
+        retval: Option<ast::FunctionParam>,
+        mut params: Vec<ast::FunctionParam>,
+    ) -> Result<(), CompilationError> {
+        if let Some(p) = retval {
+            params.push(p);
+        }
         for param in params.iter().rev() {
             if let ast::Type::Pred = param.ty {
                 // this should raise an error as predicates can only exist in the reg state space
@@ -225,12 +240,12 @@ impl<'a> FuncCodegenState<'a> {
             self.param_stack_offset += SIZE;
 
             // align to required alignment
-            self.param_stack_offset =
-                (self.param_stack_offset + ALIGN - 1) & !(ALIGN - 1);
+            self.param_stack_offset = (self.param_stack_offset + ALIGN - 1) & !(ALIGN - 1);
 
-            let param_ptr_reg = self.construct_immediate(ast::Type::U64, ast::Immediate::UInt64(
-                self.param_stack_offset as u64,
-            ))?;
+            let param_ptr_reg = self.construct_immediate(
+                ast::Type::U64,
+                ast::Immediate::UInt64(self.param_stack_offset as u64),
+            )?;
             self.instructions.push(vm::Instruction::Sub(
                 ast::Type::U64,
                 param_ptr_reg,
@@ -274,13 +289,8 @@ impl<'a> FuncCodegenState<'a> {
     ) -> Result<vm::RegOperand, CompilationError> {
         use ast::Operand;
         match op {
-            Operand::Variable(ident) => self
-                .var_map
-                .get_reg(ident)
-                .map(|r| r.into()),
-            Operand::Immediate(imm) => self
-                .construct_immediate(ty, *imm)
-                .map(|r| r.into()),
+            Operand::Variable(ident) => self.var_map.get_reg(ident).map(|r| r.into()),
+            Operand::Immediate(imm) => self.construct_immediate(ty, *imm).map(|r| r.into()),
             Operand::SpecialReg(special) => Ok((*special).into()),
             op @ Operand::Address(_) => Err(CompilationError::InvalidOperand(op.clone())),
         }
@@ -430,10 +440,8 @@ impl<'a> FuncCodegenState<'a> {
                 ast::Guard::Negated(s) => (s, true),
             };
             let guard_reg = self.var_map.get_reg(&ident)?;
-            self.instructions.push(vm::Instruction::SkipIf(
-                guard_reg.into(),
-                expected,
-            ));
+            self.instructions
+                .push(vm::Instruction::SkipIf(guard_reg.into(), expected));
         }
 
         match instr.specifier {
@@ -504,9 +512,7 @@ impl<'a> FuncCodegenState<'a> {
                                 }
                             }
                         }
-                        Operand::Immediate(imm) => {
-                            self.construct_immediate(ty, imm)?.into()
-                        }
+                        Operand::Immediate(imm) => self.construct_immediate(ty, imm)?.into(),
                         Operand::SpecialReg(special) => special.into(),
                         op @ Operand::Address(_) => {
                             return Err(CompilationError::InvalidOperand(op.clone()))
@@ -531,12 +537,8 @@ impl<'a> FuncCodegenState<'a> {
                 let (dst, a, b, c) = self.reg_dst_3src(ty, &instr.operands)?;
                 self.instructions
                     .push(vm::Instruction::Mul(ty, mode, dst, a, b));
-                self.instructions.push(vm::Instruction::Add(
-                    ty,
-                    dst,
-                    dst.into(),
-                    c,
-                ));
+                self.instructions
+                    .push(vm::Instruction::Add(ty, dst, dst.into(), c));
             }
             Operation::Sub(ty) => {
                 let (dst, a, b) = self.reg_dst_2src(ty, &instr.operands)?;
@@ -554,12 +556,8 @@ impl<'a> FuncCodegenState<'a> {
                 let (dst, a, b, c) = self.reg_dst_3src(ty, &instr.operands)?;
                 self.instructions
                     .push(vm::Instruction::Mul(ty, ast::MulMode::Low, dst, a, b));
-                self.instructions.push(vm::Instruction::Add(
-                    ty,
-                    dst,
-                    dst.into(),
-                    c,
-                ));
+                self.instructions
+                    .push(vm::Instruction::Add(ty, dst, dst.into(), c));
             }
             Operation::Negate(ty) => {
                 let (dst, src) = self.reg_dst_1src(ty, &instr.operands)?;
@@ -670,7 +668,7 @@ impl<'a> FuncCodegenState<'a> {
 
         bblocks.push(block);
 
-        self.handle_params(func.params)?;
+        self.handle_params(func.return_param, func.params)?;
         self.handle_vars(var_decls)?;
         for block in bblocks {
             self.handle_basic_block(block)?;
