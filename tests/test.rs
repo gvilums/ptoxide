@@ -187,8 +187,6 @@ fn run_gemm(ctx: &mut Context, m: usize, k: usize, n: usize) {
     let mut res = vec![0f32; m * n];
     ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
 
-    println!("res: {:?}", res);
-
     for val in res {
         assert_eq!(val, k as f32);
     }
