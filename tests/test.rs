@@ -151,50 +151,65 @@ fn transpose() {
     }
 }
 
-#[test]
-fn gemm() {
-    let contents = std::fs::read_to_string("kernels/gemm.ptx").unwrap();
-    let mut ctx = Context::new_with_module(&contents).unwrap();
-
+fn run_gemm(ctx: &mut Context, m: usize, k: usize, n: usize) {
     const ALIGN: usize = std::mem::align_of::<f32>();
     const SIZE: usize = std::mem::size_of::<f32>();
 
     // todo test non-even alignment
-    const M: usize = 100;
-    const K: usize = 64;
-    const N: usize = 81;
-    const BLOCK_SIZE: u32 = 32;
-    const GRID_SIZE_X: u32 = (M as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    const GRID_SIZE_Y: u32 = (N as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let block_size = 1;//32;
+    let grid_x = (m as u32 + block_size - 1) / block_size;
+    let grid_y = (n as u32 + block_size - 1) / block_size;
 
-    let a = ctx.alloc(SIZE * M * K, ALIGN);
-    let b = ctx.alloc(SIZE * K * N, ALIGN);
-    let c = ctx.alloc(SIZE * M * N, ALIGN);
+    let a = ctx.alloc(SIZE * m * k, ALIGN);
+    let b = ctx.alloc(SIZE * k * n, ALIGN);
+    let c = ctx.alloc(SIZE * m * n, ALIGN);
 
-    let data_a = vec![1f32; M * K];
-    let data_b = vec![1f32; K * N];
+    let data_a = vec![1f32; m * k];
+    let data_b = vec![1f32; k * n];
     ctx.write(a, 0, bytemuck::cast_slice(&data_a));
     ctx.write(b, 0, bytemuck::cast_slice(&data_b));
 
     ctx.run(
         LaunchParams::func_id(0)
-            .grid2d(GRID_SIZE_X, GRID_SIZE_Y)
-            .block2d(BLOCK_SIZE, BLOCK_SIZE),
+            .grid2d(grid_x, grid_y)
+            .block2d(block_size, block_size),
         &[
             Argument::Ptr(a),
             Argument::Ptr(b),
             Argument::Ptr(c),
-            Argument::U64(M as u64),
-            Argument::U64(K as u64),
-            Argument::U64(N as u64),
+            Argument::U64(m as u64),
+            Argument::U64(k as u64),
+            Argument::U64(n as u64),
         ],
     )
     .unwrap();
 
-    let mut res = vec![0f32; M * N];
+    let mut res = vec![0f32; m * n];
     ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
 
+    println!("res: {:?}", res);
+
     for val in res {
-        assert_eq!(val, K as f32);
+        assert_eq!(val, k as f32);
+    }
+}
+
+#[test]
+fn gemm() {
+    let contents = std::fs::read_to_string("kernels/gemm.ptx").unwrap();
+    let mut ctx = Context::new_with_module(&contents).unwrap();
+    
+    let sizes = [
+        (32, 32, 32),
+        (3, 2, 1),
+        (1, 20, 1),
+        (2, 24, 1),
+        (123, 54, 10),
+        (20, 40, 33),
+    ];
+
+    for (m, k, n) in sizes.into_iter() {
+        run_gemm(&mut ctx, m, k, n);
+        ctx.reset_mem();
     }
 }

@@ -578,6 +578,10 @@ impl Context {
         data.copy_from_slice(&self.global_mem[begin..end]);
     }
 
+    pub fn reset_mem(&mut self) {
+        self.global_mem.clear();
+    }
+
     fn run_cta(
         &mut self,
         nctaid: (u32, u32, u32),

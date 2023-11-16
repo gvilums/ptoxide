@@ -508,10 +508,11 @@ impl<'a> FuncCodegenState<'a> {
             }
             Operation::MultiplyAdd(mode, ty) => {
                 let (dst, a, b, c) = self.reg_dst_3src(ty, &instr.operands)?;
+                let tmp = self.alloc_reg();
                 self.instructions
-                    .push(vm::Instruction::Mul(ty, mode, dst, a, b));
+                    .push(vm::Instruction::Mul(ty, mode, tmp, a, b));
                 self.instructions
-                    .push(vm::Instruction::Add(ty, dst, dst.into(), c));
+                    .push(vm::Instruction::Add(ty, dst, tmp.into(), c));
             }
             Operation::Sub(ty) => {
                 let (dst, a, b) = self.reg_dst_2src(ty, &instr.operands)?;
@@ -527,10 +528,11 @@ impl<'a> FuncCodegenState<'a> {
             }
             Operation::FusedMulAdd(_, ty) => {
                 let (dst, a, b, c) = self.reg_dst_3src(ty, &instr.operands)?;
+                let tmp = self.alloc_reg();
                 self.instructions
-                    .push(vm::Instruction::Mul(ty, ast::MulMode::Low, dst, a, b));
+                    .push(vm::Instruction::Mul(ty, ast::MulMode::Low, tmp, a, b));
                 self.instructions
-                    .push(vm::Instruction::Add(ty, dst, dst.into(), c));
+                    .push(vm::Instruction::Add(ty, dst, tmp.into(), c));
             }
             Operation::Negate(ty) => {
                 let (dst, src) = self.reg_dst_1src(ty, &instr.operands)?;
