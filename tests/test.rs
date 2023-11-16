@@ -160,38 +160,41 @@ fn gemm() {
     const SIZE: usize = std::mem::size_of::<f32>();
 
     // todo test non-even alignment
-    const N: usize = 64;
+    const M: usize = 100;
+    const K: usize = 64;
+    const N: usize = 81;
     const BLOCK_SIZE: u32 = 32;
-    const GRID_SIZE: u32 = (N as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    const GRID_SIZE_X: u32 = (M as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    const GRID_SIZE_Y: u32 = (N as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    let a = ctx.alloc(SIZE * N * N, ALIGN);
-    let b = ctx.alloc(SIZE * N * N, ALIGN);
-    let c = ctx.alloc(SIZE * N * N, ALIGN);
+    let a = ctx.alloc(SIZE * M * K, ALIGN);
+    let b = ctx.alloc(SIZE * K * N, ALIGN);
+    let c = ctx.alloc(SIZE * M * N, ALIGN);
 
-    let data_a = vec![1f32; N * N];
-    let data_b = vec![1f32; N * N];
+    let data_a = vec![1f32; M * K];
+    let data_b = vec![1f32; K * N];
     ctx.write(a, 0, bytemuck::cast_slice(&data_a));
     ctx.write(b, 0, bytemuck::cast_slice(&data_b));
 
     ctx.run(
         LaunchParams::func_id(0)
-            .grid2d(GRID_SIZE, GRID_SIZE)
+            .grid2d(GRID_SIZE_X, GRID_SIZE_Y)
             .block2d(BLOCK_SIZE, BLOCK_SIZE),
         &[
             Argument::Ptr(a),
             Argument::Ptr(b),
             Argument::Ptr(c),
-            Argument::U64(N as u64),
-            Argument::U64(N as u64),
+            Argument::U64(M as u64),
+            Argument::U64(K as u64),
             Argument::U64(N as u64),
         ],
     )
     .unwrap();
 
-    let mut res = vec![0f32; N * N];
+    let mut res = vec![0f32; M * N];
     ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
 
     for val in res {
-        assert_eq!(val, N as f32);
+        assert_eq!(val, K as f32);
     }
 }
