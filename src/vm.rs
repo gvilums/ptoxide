@@ -611,7 +611,6 @@ impl Context {
         let mut barriers = Barriers::new();
 
         while let Some(mut state) = runnable.pop() {
-            println!("running thread {:?} {:?}", state.tid, state.ctaid);
             loop {
                 match self.step_thread(&mut state, &mut shared_mem)? {
                     ThreadResult::Continue => continue,
