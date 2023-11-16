@@ -1,13 +1,15 @@
-use logos::{Lexer, Logos};
+use std::ops::Range;
+
+use logos::{Lexer, Logos, Source};
 use thiserror::Error;
 
-fn lex_reg_multiplicity(lex: &mut Lexer<Token>) -> Result<u32, LexError> {
+fn lex_reg_multiplicity<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<u32, LexError> {
     let mut s = lex.slice();
     s = &s[1..s.len() - 1];
     s.parse().map_err(|_| LexError::ParseRegMultiplicity)
 }
 
-fn lex_version_number(lex: &mut Lexer<Token>) -> Result<Version, LexError> {
+fn lex_version_number<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<Version, LexError> {
     let Some((major_str, minor_str)) = lex.slice().split_once('.') else {
         return Err(LexError::ParseVersionNumber);
     };
@@ -20,7 +22,7 @@ fn lex_version_number(lex: &mut Lexer<Token>) -> Result<Version, LexError> {
     Ok(Version { major, minor })
 }
 
-fn lex_float32_constant(lex: &mut Lexer<Token>) -> Result<f32, LexError> {
+fn lex_float32_constant<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<f32, LexError> {
     let Some(vals) = lex.slice().as_bytes().get(2..) else {
         return Err(LexError::ParseFloatConst);
     };
@@ -37,7 +39,7 @@ fn lex_float32_constant(lex: &mut Lexer<Token>) -> Result<f32, LexError> {
     Ok(f32::from_bits(val))
 }
 
-fn lex_float64_constant(_lex: &mut Lexer<Token>) -> Option<f64> {
+fn lex_float64_constant<'a>(_lex: &mut Lexer<'a, Token<'a>>) -> Option<f64> {
     todo!()
 }
 
@@ -60,7 +62,7 @@ impl std::error::Error for LexError {}
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(skip r"[ \t\n\f]+")] // Ignore this regex pattern between tokens
 #[logos(error = LexError)]
-pub enum Token {
+pub enum Token<'a> {
     #[token(".version")]
     Version,
     #[token(".target")]
@@ -245,8 +247,8 @@ pub enum Token {
     #[token("%ctaid.z")]
     CtaIdZ,
 
-    #[regex(r"[a-zA-Z][a-zA-Z0-9_$]*|[_$%][a-zA-Z0-9_$]+", |lex| lex.slice().to_string())]
-    Identifier(String),
+    #[regex(r"[a-zA-Z][a-zA-Z0-9_$]*|[_$%][a-zA-Z0-9_$]+", |lex| lex.slice())]
+    Identifier(&'a str),
 
     #[regex(r"-?[0-9]+", |lex| lex.slice().parse().ok(), priority=2)]
     IntegerConst(i64),
@@ -294,7 +296,7 @@ pub enum Token {
     Skip,
 }
 
-impl Token {
+impl<'a> Token<'a> {
     fn is_directive(&self) -> bool {
         matches!(
             self,
@@ -316,26 +318,37 @@ impl Token {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SourceLocation {
+    byte: usize,
+    line: usize,
+    col: usize,
+}
+
 #[derive(Error, Debug)]
 pub enum ParseErr {
-    #[error("Unexpected token: {:?}", .0)]
-    UnexpectedToken(Token),
+    // #[error("Unexpected token \"{:?}\" at {:?}", .0, .1)]
+    // UnexpectedToken(Token, SourceLocation),
+    #[error("Unexpected token \"{:?}\"", .0)]
+    UnexpectedToken(String, SourceLocation),
     #[error("Unexpected end of file")]
     UnexpectedEof,
-    #[error("Lex error")]
-    LexError(#[from] LexError),
+    #[error("Lex error \"{:?}\" at {:?}", .0, .1)]
+    LexError(LexError, SourceLocation),
 }
 
 type ParseResult<'a, T> = Result<(T, Scanner<'a>), ParseErr>;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Scanner<'a> {
-    tokens: &'a [Token],
+    // src: &'a str,
+    // tokens: &'a [(Token<'a>, Range<usize>)],
+    inner: Lexer<'a, Token<'a>>,
 }
 
 impl<'a> Scanner<'a> {
-    fn new(tokens: &'a [Token]) -> Self {
-        Scanner { tokens }
+    fn new(src: &'a str, tokens: &'a [(Token, Range<usize>)]) -> Self {
+        Scanner { src, tokens }
     }
 
     fn get(&self) -> Option<&'a Token> {
@@ -639,16 +652,73 @@ pub enum Operation {
     Return,
 }
 
+struct Parser<'a> {
+    src: &'a str,
+    inner: std::iter::Peekable<logos::SpannedIter<'a, Token<'a>>>,
+}
+
+impl<'a> Parser<'a> {
+
+    pub fn new(src: &str) -> Self {
+        Self {
+            src,
+            inner: Token::lexer(src).spanned().peekable(),
+        }
+    }
+
+    pub fn get(&mut self) {
+        self.inner.peek()
+    }
+}
+
+pub fn find_position(text: &str, byte_pos: usize) -> SourceLocation { 
+    let text = text.as_bytes();
+
+    let mut line = 1;
+    let mut col = 1;
+
+    let end = byte_pos.min(text.len());
+
+    for &c in &text[..end] {
+        if c == b'\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+
+    SourceLocation { byte: byte_pos, line, col }
+}
+
 pub fn parse_program(src: &str) -> Result<Module, ParseErr> {
-    // let res = Token::lexer(src)
-    //     .spanned()
-    //     .map(|(t, span)| t.map_err(|e| (e, span)))
-    //     // .collect::<Result<Vec<_>, _>>();
-    //     .collect::<Vec<_>>();
-    // dbg!(res);
-    let tokens = Token::lexer(src).collect::<Result<Vec<_>, _>>()?;
-    let scanner = Scanner::new(&tokens);
+    let mut lex0 = Token::lexer(src);
+    let mut lex1 = lex0;
+    lex0.bump(10);
+    lex1.bump(10);
+
+    let mut tokens = Vec::new();
+    for (res, span) in Token::lexer(src).spanned() {
+        match res {
+            Ok(token) => tokens.push((token, span)),
+            Err(e) => return Err(ParseErr::LexError(e, find_position(src, span.start)))
+        }
+    }
+    let scanner = Scanner::new(src, &tokens);
     parse_module(scanner).map(|(module, _)| module)
+}
+
+type TokenLexer<'a> = Lexer<'a, Token<'a>>;
+
+fn parse_pragma2(mut lexer: TokenLexer) -> ParseResult<Pragma> {
+    scanner.consume(Token::Pragma)?;
+    match scanner.must_pop()? {
+        Token::StringLiteral(s) => {
+            scanner.consume(Token::Semicolon)?;
+            Ok((Pragma { value: s.clone() }, scanner))
+        }
+        t => Err(ParseErr::UnexpectedToken(t.clone())),
+    }
 }
 
 fn parse_pragma(mut scanner: Scanner) -> ParseResult<Pragma> {
@@ -676,7 +746,7 @@ fn parse_target(mut scanner: Scanner) -> ParseResult<String> {
     let Token::Identifier(target) = target else {
         return Err(ParseErr::UnexpectedToken(target.clone()));
     };
-    Ok((target.clone(), scanner))
+    Ok((target.to_string(), scanner))
 }
 
 fn parse_address_size(mut scanner: Scanner) -> ParseResult<AddressSize> {
@@ -856,7 +926,7 @@ fn parse_variable(scanner: Scanner) -> ParseResult<VarDecl> {
             vector,
             alignment,
             array_bounds,
-            ident,
+            ident: ident.to_string(),
             multiplicity,
         },
         scanner,
@@ -866,13 +936,13 @@ fn parse_variable(scanner: Scanner) -> ParseResult<VarDecl> {
 fn parse_guard(mut scanner: Scanner) -> ParseResult<Guard> {
     scanner.consume(Token::At)?;
     let guard = match scanner.must_pop()? {
-        Token::Identifier(s) => Guard::Normal(s.clone()),
+        Token::Identifier(s) => Guard::Normal(s.to_string()),
         Token::Exclamation => {
             let ident = match scanner.must_pop()? {
                 Token::Identifier(s) => s.clone(),
                 t => return Err(ParseErr::UnexpectedToken(t.clone())),
             };
-            Guard::Negated(ident)
+            Guard::Negated(ident.to_string())
         }
         t => return Err(ParseErr::UnexpectedToken(t.clone())),
     };
@@ -992,7 +1062,7 @@ fn parse_operation(mut scanner: Scanner) -> ParseResult<Operation> {
             Ok((
                 Operation::Call {
                     uniform,
-                    ident,
+                    ident: ident.to_string(),
                     ret_param,
                     params,
                 },
@@ -1061,7 +1131,7 @@ fn parse_operand(mut scanner: Scanner) -> ParseResult<Operand> {
                 // array syntax
                 todo!()
             } else {
-                Operand::Variable(s.clone())
+                Operand::Variable(s.to_string())
             }
         }
         Token::LeftBracket => {
@@ -1073,15 +1143,15 @@ fn parse_operand(mut scanner: Scanner) -> ParseResult<Operand> {
                 scanner.skip();
                 match scanner.must_pop()? {
                     Token::IntegerConst(i) => {
-                        Operand::Address(AddressOperand::AddressOffset(ident, *i))
+                        Operand::Address(AddressOperand::AddressOffset(ident.to_string(), *i))
                     }
                     Token::Identifier(s) => {
-                        Operand::Address(AddressOperand::AddressOffsetVar(ident, s.clone()))
+                        Operand::Address(AddressOperand::AddressOffsetVar(ident.to_string(), s.to_string()))
                     }
                     t => return Err(ParseErr::UnexpectedToken(t.clone())),
                 }
             } else {
-                Operand::Address(AddressOperand::Address(ident))
+                Operand::Address(AddressOperand::Address(ident.to_string()))
             };
             scanner.consume(Token::RightBracket)?;
             res
@@ -1191,7 +1261,7 @@ fn parse_statement(mut scanner: Scanner) -> ParseResult<Statement> {
             let i = i.clone();
             scanner.skip();
             scanner.consume(Token::Colon)?;
-            Ok((Statement::Label(i), scanner))
+            Ok((Statement::Label(i.to_string()), scanner))
         }
         _ => {
             let (instr, scanner) = parse_instruction(scanner)?;
@@ -1224,7 +1294,7 @@ fn parse_function_param(mut scanner: Scanner) -> ParseResult<FunctionParam> {
 
     let fparam = FunctionParam {
         alignment,
-        ident,
+        ident: ident.to_string(),
         ty,
         array_bounds,
     };
@@ -1306,7 +1376,7 @@ fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
 
     Ok((
         Function {
-            ident,
+            ident: ident.to_string(),
             visible,
             entry,
             return_param,
