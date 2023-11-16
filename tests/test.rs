@@ -1,9 +1,14 @@
 use ptoxide::{Argument, Context, LaunchParams};
 
+const ADD: &'static str = include_str!("../kernels/add.ptx");
+const ADD_SIMPLE: &'static str = include_str!("../kernels/add_simple.ptx");
+const FNCALL: &'static str = include_str!("../kernels/fncall.ptx");
+const GEMM: &'static str = include_str!("../kernels/gemm.ptx");
+const TRANSPOSE: &'static str = include_str!("../kernels/transpose.ptx");
+
 #[test]
 fn add_simple() {
-    let contents = std::fs::read_to_string("kernels/add_simple.ptx").unwrap();
-    let mut ctx = Context::new_with_module(&contents).unwrap();
+    let mut ctx = Context::new_with_module(ADD_SIMPLE).unwrap();
 
     const ALIGN: usize = std::mem::align_of::<f32>();
     const SIZE: usize = std::mem::size_of::<f32>();
@@ -32,8 +37,7 @@ fn add_simple() {
 
 #[test]
 fn add() {
-    let contents = std::fs::read_to_string("kernels/add.ptx").unwrap();
-    let mut ctx = Context::new_with_module(&contents).unwrap();
+    let mut ctx = Context::new_with_module(ADD).unwrap();
 
     const ALIGN: usize = std::mem::align_of::<f32>();
     const SIZE: usize = std::mem::size_of::<f32>();
@@ -71,8 +75,7 @@ fn add() {
 
 #[test]
 fn fncall() {
-    let contents = std::fs::read_to_string("kernels/fncall.ptx").unwrap();
-    let mut ctx = Context::new_with_module(&contents).unwrap();
+    let mut ctx = Context::new_with_module(FNCALL).unwrap();
 
     const ALIGN: usize = std::mem::align_of::<f32>();
     const SIZE: usize = std::mem::size_of::<f32>();
@@ -110,17 +113,13 @@ fn fncall() {
 
 #[test]
 fn transpose() {
-    let contents = std::fs::read_to_string("kernels/transpose.ptx").unwrap();
-    let mut ctx = Context::new_with_module(&contents).unwrap();
+    let mut ctx = Context::new_with_module(TRANSPOSE).unwrap();
 
     const ALIGN: usize = std::mem::align_of::<f32>();
     const SIZE: usize = std::mem::size_of::<f32>();
-    const N: usize = 256;
+    const N: usize = 300;
     const BLOCK_SIZE: u32 = 32;
     const GRID_SIZE: u32 = (N as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
-
-    // kernel assumes that warps are aligned
-    assert!(N % BLOCK_SIZE as usize == 0);
 
     let a = ctx.alloc(SIZE * N * N, ALIGN);
     let b = ctx.alloc(SIZE * N * N, ALIGN);
@@ -194,8 +193,7 @@ fn run_gemm(ctx: &mut Context, m: usize, k: usize, n: usize) {
 
 #[test]
 fn gemm() {
-    let contents = std::fs::read_to_string("kernels/gemm.ptx").unwrap();
-    let mut ctx = Context::new_with_module(&contents).unwrap();
+    let mut ctx = Context::new_with_module(GEMM).unwrap();
     
     let sizes = [
         (32, 32, 32),

@@ -68,6 +68,7 @@ pub enum Instruction {
     Sub(Type, GenericReg, RegOperand, RegOperand),
     Or(Type, GenericReg, RegOperand, RegOperand),
     And(Type, GenericReg, RegOperand, RegOperand),
+    Not(Type, GenericReg, RegOperand),
     ShiftLeft(Type, GenericReg, RegOperand, RegOperand),
     Mul(Type, MulMode, GenericReg, RegOperand, RegOperand),
     Neg(Type, GenericReg, RegOperand),
@@ -610,6 +611,7 @@ impl Context {
         let mut barriers = Barriers::new();
 
         while let Some(mut state) = runnable.pop() {
+            println!("running thread {:?} {:?}", state.tid, state.ctaid);
             loop {
                 match self.step_thread(&mut state, &mut shared_mem)? {
                     ThreadResult::Continue => continue,
@@ -737,6 +739,15 @@ impl Context {
                     Type::F32, neg, get_f32, set_f32;
                 };
             }
+            Instruction::Not(ty, dst, src) => {
+                use std::ops::Not;
+                unary_op! {
+                    thread, ty, dst, src;
+                    Type::Pred, not, get_pred, set_pred;
+                    Type::U64 | Type::B64, not, get_u64, set_u64;
+                    Type::U32 | Type::B32, not, get_u32, set_u32;
+                }
+            }
             Instruction::ShiftLeft(ty, dst, a, b) => {
                 use std::ops::Shl;
                 binary_op! {
@@ -752,8 +763,18 @@ impl Context {
                 dst,
                 src,
             } => match (dst_type, src_type) {
+                // todo in reality most of these are no-ops
                 (Type::U64, Type::U32) => {
                     thread.set_u64(dst, thread.get_u32(src) as u64);
+                }
+                (Type::S64, Type::S32) => {
+                    thread.set_i64(dst, thread.get_i32(src) as i64);
+                }
+                (Type::U32, Type::U64) => {
+                    thread.set_u32(dst, thread.get_u64(src) as u32);
+                }
+                (Type::S32, Type::S64) => {
+                    thread.set_i32(dst, thread.get_i64(src) as i32);
                 }
                 _ => todo!(),
             },

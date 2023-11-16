@@ -8,25 +8,30 @@ __global__ void transpose(float *input, float *output, size_t N) {
 	__shared__ float sharedMemory [BLOCK_SIZE] [BLOCK_SIZE];
 
 	// global index	
-	int indexX = threadIdx.x + blockIdx.x * blockDim.x;
-	int indexY = threadIdx.y + blockIdx.y * blockDim.y;
+	int i = threadIdx.x + blockIdx.x * blockDim.x;
+	int j = threadIdx.y + blockIdx.y * blockDim.y;
 
 	// transposed global memory index
-	int tindexX = threadIdx.x + blockIdx.y * blockDim.x;
-	int tindexY = threadIdx.y + blockIdx.x * blockDim.y;
+	int ti = threadIdx.x + blockIdx.y * blockDim.x;
+	int tj = threadIdx.y + blockIdx.x * blockDim.y;
 
 	// local index
-	int localIndexX = threadIdx.x;
-	int localIndexY = threadIdx.y;
+	int local_i = threadIdx.x;
+	int local_j = threadIdx.y;
 
-	int index = indexY * N + indexX;
-	int transposedIndex = tindexY * N + tindexX;
-
-	// reading from global memory in coalesed manner and performing tanspose in shared memory
-	sharedMemory[localIndexX][localIndexY] = input[index];
+	if (i < N && j < N) {
+		// reading from global memory in coalesed manner and performing tanspose in shared memory
+		int index = j * N + i;
+		sharedMemory[local_i][local_j] = input[index];
+	} else {
+		sharedMemory[local_i][local_j] = 0.0;
+	}
 
 	__syncthreads();
 
-	// writing into global memory in coalesed fashion via transposed data in shared memory
-	output[transposedIndex] = sharedMemory[localIndexY][localIndexX];
+	if (ti < N && tj < N) {
+		// writing into global memory in coalesed fashion via transposed data in shared memory
+		int transposedIndex = tj * N + ti;
+		output[transposedIndex] = sharedMemory[local_j][local_i];
+	}
 }

@@ -526,6 +526,10 @@ impl<'a> FuncCodegenState<'a> {
                 let (dst, a, b) = self.reg_dst_2src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::And(ty, dst, a, b))
             }
+            Operation::Not(ty) => {
+                let (dst, src) = self.reg_dst_1src(ty, &instr.operands)?;
+                self.instructions.push(vm::Instruction::Not(ty, dst, src))
+            }
             Operation::FusedMulAdd(_, ty) => {
                 let (dst, a, b, c) = self.reg_dst_3src(ty, &instr.operands)?;
                 let tmp = self.alloc_reg();

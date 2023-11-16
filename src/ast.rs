@@ -166,6 +166,8 @@ pub enum Token {
     Or,
     #[token("and")]
     And,
+    #[token("not")]
+    Not,
     #[token("fma")]
     FusedMulAdd,
     #[token("neg")]
@@ -613,6 +615,7 @@ pub enum Operation {
     Sub(Type),
     Or(Type),
     And(Type),
+    Not(Type),
     FusedMulAdd(RoundingMode, Type),
     Negate(Type),
     Multiply(MulMode, Type),
@@ -922,6 +925,10 @@ fn parse_operation(mut scanner: Scanner) -> ParseResult<Operation> {
             let (ty, scanner) = parse_type(scanner)?;
             Ok((Operation::And(ty), scanner))
         }
+        Token::Not => {
+            let (ty, scanner) = parse_type(scanner)?;
+            Ok((Operation::Not(ty), scanner))
+        }
         Token::Mul => {
             let (mode, scanner) = parse_mul_mode(scanner)?;
             let (ty, scanner) = parse_type(scanner)?;
@@ -1020,7 +1027,12 @@ fn parse_operation(mut scanner: Scanner) -> ParseResult<Operation> {
             let (ty, scanner) = parse_type(scanner)?;
             Ok((Operation::ShiftLeft(ty), scanner))
         }
-        Token::Branch => Ok((Operation::Branch, scanner)),
+        Token::Branch => {
+            if let Some(Token::Uniform) = scanner.get() {
+                scanner.skip();
+            }
+            Ok((Operation::Branch, scanner))
+        }
         Token::Return => Ok((Operation::Return, scanner)),
         Token::Bar => {
             // cta token is meaningless
