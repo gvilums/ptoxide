@@ -16,12 +16,23 @@ which is then executed inside of a virtual machine.
 
 
 ```rust
+fn main() {
+    let a = vec![1, 2, 3, 4, 5];
+    let b = vec![0; a.len()];
+
+    times_two(&a, &mut b).expect("ptoxide error");
+
+    for (a, b) in a.iter().zip(b) {
+        assert_eq!(2 * a, b);
+    }
+}
+
 fn times_two(src: &[f32], dst: &mut [f32]) -> VmResult<()> {
     assert!(src.len() == dst.len());
     let n = src.len();
 
-    // KERNEL defined below
-    let mut ctx = Context::new_with_module(KERNEL)?;
+    let kernel = std::fs::read_to_string("kernel.ptx");
+    let mut ctx = Context::new_with_module(&kernel)?;
 
     const BLOCK_SIZE: u32 = 256;
     let grid_size = (n as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
@@ -43,8 +54,11 @@ fn times_two(src: &[f32], dst: &mut [f32]) -> VmResult<()> {
 
     ctx.read(b, dst);
 }
+```
 
-const KERNEL: &'static str = "
+Where `kernel.ptx` is placed in the working directory and has the following contents.
+
+```ptx
 .version 8.3
 .target sm_89
 .address_size 64
@@ -83,9 +97,6 @@ const KERNEL: &'static str = "
 
 $L__BB0_2:
 	ret;
-
-}
-";
 ```
 
 The above kernel was generated from the following CUDA code:
