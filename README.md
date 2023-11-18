@@ -1,31 +1,47 @@
 # ptoxide
 
+`ptoxide` is a crate that allows NVIDIA CUDA PTX code to be executed on any machine.
+It was created as a project to learn more about the CUDA excution model.
+
+Kernels are executed by compiling them to a custom bytecode format, 
+which is then executed inside of a virtual machine.
+
+
+## Internals
+- [`ast.rs`](/src/ast.rs) implements the logic for parsing PTX programs.
+- [`vm.rs`](/src/vm.rs) defines a bytecode format and the virtual machine to execute it.
+- [`compiler.rs`](/src/compiler.rs) implements a simple single-pass compiler to translate a PTX program given as an AST to bytecode.
 
 ## Example
 
+
 ```rust
 fn times_two(src: &[f32], dst: &mut [f32]) -> VmResult<()> {
+    assert!(src.len() == dst.len());
+    let n = src.len();
+
+    // KERNEL defined below
     let mut ctx = Context::new_with_module(KERNEL)?;
 
     const BLOCK_SIZE: u32 = 256;
-    const GRID_SIZE: u32 = (src.len() as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let grid_size = (n as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    let a = ctx.alloc(4 * src.len(), 4);
-    let b = ctx.alloc(4 * src.len(), 4);
-    ctx.write(a, 0, bytemuck::cast_slice(&data_a));
+    let a = ctx.alloc(n);
+    let b = ctx.alloc(n);
 
+    ctx.write(a, src);
     ctx.run(
         LaunchParams::func_id(0)
-            .grid1d(GRID_SIZE)
+            .grid1d(grid_size)
             .block1d(BLOCK_SIZE),
         &[
             Argument::Ptr(a),
             Argument::Ptr(b),
-            Argument::U64(N as u64),
+            Argument::U64(src.len()),
         ],
     )?;
 
-    ctx.read(b, 0, bytemuck::cast_slice_mut(&mut dst));
+    ctx.read(b, dst);
 }
 
 const KERNEL: &'static str = "
@@ -33,12 +49,10 @@ const KERNEL: &'static str = "
 .target sm_89
 .address_size 64
 
-	// .globl	_Z9times_twoPfS_m
-
-.visible .entry _Z9times_twoPfS_m(
-	.param .u64 _Z9times_twoPfS_m_param_0,
-	.param .u64 _Z9times_twoPfS_m_param_1,
-	.param .u64 _Z9times_twoPfS_m_param_2
+.visible .entry times_two(
+	.param .u64 a,
+	.param .u64 b,
+	.param .u64 n
 )
 {
 	.reg .pred 	%p<2>;
@@ -47,9 +61,9 @@ const KERNEL: &'static str = "
 	.reg .b64 	%rd<10>;
 
 
-	ld.param.u64 	%rd2, [_Z9times_twoPfS_m_param_0];
-	ld.param.u64 	%rd3, [_Z9times_twoPfS_m_param_1];
-	ld.param.u64 	%rd4, [_Z9times_twoPfS_m_param_2];
+	ld.param.u64 	%rd2, [a];
+	ld.param.u64 	%rd3, [b];
+	ld.param.u64 	%rd4, [n];
 	mov.u32 	%r1, %ctaid.x;
 	mov.u32 	%r2, %ntid.x;
 	mov.u32 	%r3, %tid.x;
@@ -73,3 +87,17 @@ $L__BB0_2:
 }
 ";
 ```
+
+The above kernel was generated from the following CUDA code:
+```c
+__global__ void times_two(float* a, float* b, size_t n) {
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        b[i] = 2 * a[i];
+    }
+}
+
+```
+
+## Reading PTX
+To learn more about the PTX ISA, check out NVIDIA's [documentation](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html).
