@@ -6,6 +6,8 @@ It was created as a project to learn more about the CUDA excution model.
 Kernels are executed by compiling them to a custom bytecode format, 
 which is then executed inside of a virtual machine.
 
+To see how the library works in practice, check out the integration tests in the [tests](/tests) directory.
+
 ## Supported Features
 `ptoxide` supports most fundamental PTX features, such as:
 - Global, shared, and local (stack) memory
@@ -19,13 +21,13 @@ and matrix transposition using a shared buffer.
 
 However, many features and instructions are still missing, and you will probably encounter `todo!`s 
 and parsing errors when attempting to execute more complex programs.
-Pull requests to implement missing features are of course always greatly appreciated!
+Pull requests to implement missing features are always greatly appreciated!
 
 ## Internals
 The code of the library itself is not yet well-documented. However, here is a general overview of the main
 modules comprising `ptoxide`:
 - The [`ast`](/src/ast/mod.rs) module implements the logic for parsing PTX programs.
-- The [`vm`](/src/vm.rs) module defines a bytecode format and the virtual machine to execute it.
+- The [`vm`](/src/vm.rs) module defines a bytecode format and implements the virtual machine to execute it.
 - The [`compiler`](/src/compiler.rs) module implements a simple single-pass compiler to translate a PTX program given as an AST to bytecode.
 
 ## Example
