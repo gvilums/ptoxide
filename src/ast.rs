@@ -624,7 +624,7 @@ impl<'a> Parser<'a> {
         let text = self.src.as_bytes();
 
         let mut line = 1;
-        let mut col = 1;
+        let mut col = 0;
 
         let end = span.end.min(text.len());
 
@@ -908,7 +908,7 @@ impl<'a> Parser<'a> {
             Token::Exclamation => {
                 let t = self.must_pop()?;
                 let ident = match t.0 {
-                    Token::Identifier(s) => s.clone(),
+                    Token::Identifier(s) => s,
                     _ => return Err(self.unexpected(t)),
                 };
                 Guard::Negated(ident.to_string())
@@ -1258,39 +1258,32 @@ impl<'a> Parser<'a> {
 
         let array_bounds = self.parse_array_bounds()?;
 
-        let fparam = FunctionParam {
+        Ok(FunctionParam {
             alignment,
             ident: ident.to_string(),
             ty,
             array_bounds,
-        };
-
-        let t = self.must_pop()?;
-        match t.0 {
-            Token::Comma | Token::RightParen => Ok(fparam),
-            _ => Err(self.unexpected(t)),
-        }
+        })
     }
 
     fn parse_function_params(&mut self) -> ParseResult<Vec<FunctionParam>> {
         // if there is no left parenthesis, there are no parameters
-        let t = self.must_get()?;
-        if let Token::LeftParen = t.0 {
-            self.skip();
-        } else {
+        if !self.consume_match(Token::LeftParen)? {
             return Ok(Vec::new());
         }
+        // if we immediately see a right parenthesis, there are no parameters
+        if self.consume_match(Token::RightParen)? {
+            return Ok(Vec::new());
+        }
+
         let mut params = Vec::new();
         loop {
-            let t = self.must_get()?;
+            params.push(self.parse_function_param()?);
+            let t = self.must_pop()?;
             match t.0 {
-                Token::RightParen => {
-                    self.skip();
-                    break Ok(params);
-                }
-                _ => {
-                    params.push(self.parse_function_param()?);
-                }
+                Token::Comma => {},
+                Token::RightParen => break Ok(params),
+                _ => return Err(self.unexpected(t)),
             }
         }
     }
