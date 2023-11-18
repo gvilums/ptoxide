@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use crate::ast::MulMode;
 use crate::ast::SpecialReg;
+use crate::ast::PredicateOp;
+use crate::ast::Type;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Symbol {
@@ -18,9 +20,6 @@ pub enum StateSpace {
     // includes ptx shared
     Shared,
 }
-
-use crate::ast::PredicateOp;
-use crate::ast::Type;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Constant {
