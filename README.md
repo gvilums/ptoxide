@@ -14,6 +14,7 @@ To see how the library works in practice, check out the integration tests in the
 - (Recursive) function calls
 - Thread synchronization using barriers
 - Various arithmetic operations on integers and floating point values
+- One-, two-, and three-dimensional thread grids and blocks
 
 These features are sufficient to execute the kernels found in the [kernels](/kernels) directory,
 such as simple vector operations, matrix multiplication, 
