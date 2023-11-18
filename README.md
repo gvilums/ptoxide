@@ -6,7 +6,8 @@ It was created as a project to learn more about the CUDA excution model.
 Kernels are executed by compiling them to a custom bytecode format, 
 which is then executed inside of a virtual machine.
 
-To see how the library works in practice, check out the integration tests in the [tests](/tests) directory.
+To see how the library works in practice, check out the [example below](#example)
+and take a look at the integration tests in the [tests](/tests) directory.
 
 ## Supported Features
 `ptoxide` supports most fundamental PTX features, such as:
