@@ -3,3 +3,4 @@
 .vscode
 flamegraph.svg
 perf.data
+out.txt
