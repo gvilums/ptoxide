@@ -343,13 +343,35 @@ pub enum VmError {
 type VmResult<T> = Result<T, VmError>;
 
 #[derive(Clone, Copy, Debug)]
-pub struct DevicePointer(u64);
+pub struct DevicePointer<T>(u64, std::marker::PhantomData<T>);
+
+#[derive(Clone, Copy, Debug)]
+pub struct RawDevicePointer(u64);
+
+impl<T> From<RawDevicePointer> for DevicePointer<T> {
+    fn from(value: RawDevicePointer) -> Self {
+        Self(value.0, std::marker::PhantomData)
+    }
+}
+
+impl<T> From<DevicePointer<T>> for RawDevicePointer {
+    fn from(value: DevicePointer<T>) -> Self {
+        Self(value.0)
+    }
+}
+
 
 pub enum Argument<'a> {
-    Ptr(DevicePointer),
+    Ptr(RawDevicePointer),
     U64(u64),
     U32(u32),
     Bytes(&'a [u8]),
+}
+
+impl<'a> Argument<'a> {
+    pub fn ptr<T>(ptr: DevicePointer<T>) -> Self {
+        Self::Ptr(ptr.into())
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -558,25 +580,41 @@ impl Context {
         todo!()
     }
 
-    pub fn alloc(&mut self, size: usize, align: usize) -> DevicePointer {
+    pub fn alloc_raw(&mut self, size: usize, align: usize) -> RawDevicePointer {
         // Calculate the next aligned position
         let aligned_ptr = (self.global_mem.len() + align - 1) & !(align - 1);
         // Resize the vector to ensure the space is allocated
         self.global_mem.resize(aligned_ptr + size, 0);
         // Return the device pointer to the aligned address
-        DevicePointer(aligned_ptr as u64)
+        RawDevicePointer(aligned_ptr as u64)
     }
 
-    pub fn write(&mut self, ptr: DevicePointer, offset: usize, data: &[u8]) {
+    pub fn write_raw(&mut self, ptr: RawDevicePointer, offset: usize, data: &[u8]) {
         let begin = ptr.0 as usize + offset;
         let end = begin + data.len();
         self.global_mem[begin..end].copy_from_slice(data);
     }
 
-    pub fn read(&mut self, ptr: DevicePointer, offset: usize, data: &mut [u8]) {
+    pub fn read_raw(&mut self, ptr: RawDevicePointer, offset: usize, data: &mut [u8]) {
         let begin = ptr.0 as usize + offset;
         let end = begin + data.len();
         data.copy_from_slice(&self.global_mem[begin..end]);
+    }
+
+    pub fn alloc<T>(&mut self, count: usize) -> DevicePointer<T> {
+        self.alloc_raw(count * std::mem::size_of::<T>(), std::mem::align_of::<T>()).into()
+    }
+
+    pub fn read<T>(&mut self, src: DevicePointer<T>, dst: & mut [T])
+    where T: bytemuck::NoUninit + bytemuck::AnyBitPattern,
+    {
+        self.read_raw(src.into(), 0, bytemuck::cast_slice_mut(dst));
+    }
+
+    pub fn write<T>(&mut self, dst: DevicePointer<T>, src: &[T]) 
+    where T: bytemuck::NoUninit + bytemuck::AnyBitPattern,
+    {
+        self.write_raw(dst.into(), 0, bytemuck::cast_slice(src));
     }
 
     pub fn reset_mem(&mut self) {
@@ -956,18 +994,18 @@ mod test {
         }];
         const ALIGN: usize = std::mem::align_of::<u64>();
         let mut ctx = Context::new_raw(prog, desc);
-        let a = ctx.alloc(8, ALIGN);
-        let b = ctx.alloc(8, ALIGN);
-        let c = ctx.alloc(8, ALIGN);
-        ctx.write(a, 0, &1u64.to_ne_bytes());
-        ctx.write(b, 0, &2u64.to_ne_bytes());
+        let a = ctx.alloc_raw(8, ALIGN);
+        let b = ctx.alloc_raw(8, ALIGN);
+        let c = ctx.alloc_raw(8, ALIGN);
+        ctx.write_raw(a, 0, &1u64.to_ne_bytes());
+        ctx.write_raw(b, 0, &2u64.to_ne_bytes());
         ctx.run(
             LaunchParams::func_id(0).grid1d(1).block1d(1),
             &[Argument::Ptr(a), Argument::Ptr(b), Argument::Ptr(c)],
         )
         .unwrap();
         let mut res = [0u8; 8];
-        ctx.read(c, 0, &mut res);
+        ctx.read_raw(c, 0, &mut res);
         assert_eq!(u64::from_ne_bytes(res), 3);
     }
 
@@ -1061,14 +1099,14 @@ mod test {
         const N: usize = 10;
 
         let mut ctx = Context::new_raw(prog, desc);
-        let a = ctx.alloc(8 * N, ALIGN);
-        let b = ctx.alloc(8 * N, ALIGN);
-        let c = ctx.alloc(8 * N, ALIGN);
+        let a = ctx.alloc_raw(8 * N, ALIGN);
+        let b = ctx.alloc_raw(8 * N, ALIGN);
+        let c = ctx.alloc_raw(8 * N, ALIGN);
 
         let data_a = vec![1u64; N];
         let data_b = vec![2u64; N];
-        ctx.write(a, 0, bytemuck::cast_slice(&data_a));
-        ctx.write(b, 0, bytemuck::cast_slice(&data_b));
+        ctx.write_raw(a, 0, bytemuck::cast_slice(&data_a));
+        ctx.write_raw(b, 0, bytemuck::cast_slice(&data_b));
 
         ctx.run(
             LaunchParams::func_id(0).grid1d(1).block1d(N as u32),
@@ -1077,7 +1115,7 @@ mod test {
         .unwrap();
 
         let mut res = vec![0u64; N];
-        ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
+        ctx.read_raw(c, 0, bytemuck::cast_slice_mut(&mut res));
 
         res.iter().for_each(|v| assert_eq!(*v, 3));
     }

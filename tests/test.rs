@@ -14,14 +14,14 @@ fn add_simple() {
     const SIZE: usize = std::mem::size_of::<f32>();
     const N: usize = 10;
 
-    let a = ctx.alloc(SIZE * N, ALIGN);
-    let b = ctx.alloc(SIZE * N, ALIGN);
-    let c = ctx.alloc(SIZE * N, ALIGN);
+    let a = ctx.alloc_raw(SIZE * N, ALIGN);
+    let b = ctx.alloc_raw(SIZE * N, ALIGN);
+    let c = ctx.alloc_raw(SIZE * N, ALIGN);
 
     let data_a = vec![1f32; N];
     let data_b = vec![2f32; N];
-    ctx.write(a, 0, bytemuck::cast_slice(&data_a));
-    ctx.write(b, 0, bytemuck::cast_slice(&data_b));
+    ctx.write_raw(a, 0, bytemuck::cast_slice(&data_a));
+    ctx.write_raw(b, 0, bytemuck::cast_slice(&data_b));
 
     ctx.run(
         LaunchParams::func_id(0).grid1d(1).block1d(N as u32),
@@ -30,7 +30,7 @@ fn add_simple() {
     .unwrap();
 
     let mut res = vec![0f32; N];
-    ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
+    ctx.read_raw(c, 0, bytemuck::cast_slice_mut(&mut res));
 
     res.iter().for_each(|v| assert_eq!(*v, 3f32));
 }
@@ -45,14 +45,14 @@ fn add() {
     const BLOCK_SIZE: u32 = 256;
     const GRID_SIZE: u32 = (N as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    let a = ctx.alloc(SIZE * N, ALIGN);
-    let b = ctx.alloc(SIZE * N, ALIGN);
-    let c = ctx.alloc(SIZE * N, ALIGN);
+    let a = ctx.alloc_raw(SIZE * N, ALIGN);
+    let b = ctx.alloc_raw(SIZE * N, ALIGN);
+    let c = ctx.alloc_raw(SIZE * N, ALIGN);
 
     let data_a = vec![1f32; N];
     let data_b = vec![2f32; N];
-    ctx.write(a, 0, bytemuck::cast_slice(&data_a));
-    ctx.write(b, 0, bytemuck::cast_slice(&data_b));
+    ctx.write_raw(a, 0, bytemuck::cast_slice(&data_a));
+    ctx.write_raw(b, 0, bytemuck::cast_slice(&data_b));
 
     ctx.run(
         LaunchParams::func_id(0)
@@ -68,7 +68,7 @@ fn add() {
     .unwrap();
 
     let mut res = vec![0f32; N];
-    ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
+    ctx.read_raw(c, 0, bytemuck::cast_slice_mut(&mut res));
 
     res.iter().for_each(|v| assert_eq!(*v, 3f32));
 }
@@ -83,14 +83,14 @@ fn fncall() {
     const BLOCK_SIZE: u32 = 256;
     const GRID_SIZE: u32 = (N as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    let a = ctx.alloc(SIZE * N, ALIGN);
-    let b = ctx.alloc(SIZE * N, ALIGN);
-    let c = ctx.alloc(SIZE * N, ALIGN);
+    let a = ctx.alloc_raw(SIZE * N, ALIGN);
+    let b = ctx.alloc_raw(SIZE * N, ALIGN);
+    let c = ctx.alloc_raw(SIZE * N, ALIGN);
 
     let data_a = vec![1f32; N];
     let data_b = vec![2f32; N];
-    ctx.write(a, 0, bytemuck::cast_slice(&data_a));
-    ctx.write(b, 0, bytemuck::cast_slice(&data_b));
+    ctx.write_raw(a, 0, bytemuck::cast_slice(&data_a));
+    ctx.write_raw(b, 0, bytemuck::cast_slice(&data_b));
 
     ctx.run(
         LaunchParams::func_id(1) // in this case id 0 is the helper fn
@@ -106,7 +106,7 @@ fn fncall() {
     .unwrap();
 
     let mut res = vec![0f32; N];
-    ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
+    ctx.read_raw(c, 0, bytemuck::cast_slice_mut(&mut res));
 
     res.iter().for_each(|v| assert_eq!(*v, 3f32));
 }
@@ -117,8 +117,8 @@ fn run_transpose(ctx: &mut Context, n: usize) {
     const BLOCK_SIZE: u32 = 32;
     let grid_size: u32 = (n as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    let a = ctx.alloc(SIZE * n * n, ALIGN);
-    let b = ctx.alloc(SIZE * n * n, ALIGN);
+    let a = ctx.alloc_raw(SIZE * n * n, ALIGN);
+    let b = ctx.alloc_raw(SIZE * n * n, ALIGN);
 
     let mut data_a = vec![0f32; n * n];
     for x in 0..n {
@@ -126,7 +126,7 @@ fn run_transpose(ctx: &mut Context, n: usize) {
             data_a[x * n + y] = (x * n + y) as f32;
         }
     }
-    ctx.write(a, 0, bytemuck::cast_slice(&data_a));
+    ctx.write_raw(a, 0, bytemuck::cast_slice(&data_a));
 
     ctx.run(
         LaunchParams::func_id(0)
@@ -137,7 +137,7 @@ fn run_transpose(ctx: &mut Context, n: usize) {
     .unwrap();
 
     let mut res = vec![0f32; n * n];
-    ctx.read(b, 0, bytemuck::cast_slice_mut(&mut res));
+    ctx.read_raw(b, 0, bytemuck::cast_slice_mut(&mut res));
 
     for x in 0..n {
         for y in 0..n {
@@ -164,14 +164,14 @@ fn run_gemm(ctx: &mut Context, m: usize, k: usize, n: usize) {
     let grid_x = (m as u32 + block_size - 1) / block_size;
     let grid_y = (n as u32 + block_size - 1) / block_size;
 
-    let a = ctx.alloc(SIZE * m * k, ALIGN);
-    let b = ctx.alloc(SIZE * k * n, ALIGN);
-    let c = ctx.alloc(SIZE * m * n, ALIGN);
+    let a = ctx.alloc_raw(SIZE * m * k, ALIGN);
+    let b = ctx.alloc_raw(SIZE * k * n, ALIGN);
+    let c = ctx.alloc_raw(SIZE * m * n, ALIGN);
 
     let data_a = vec![1f32; m * k];
     let data_b = vec![1f32; k * n];
-    ctx.write(a, 0, bytemuck::cast_slice(&data_a));
-    ctx.write(b, 0, bytemuck::cast_slice(&data_b));
+    ctx.write_raw(a, 0, bytemuck::cast_slice(&data_a));
+    ctx.write_raw(b, 0, bytemuck::cast_slice(&data_b));
 
     ctx.run(
         LaunchParams::func_id(0)
@@ -189,7 +189,7 @@ fn run_gemm(ctx: &mut Context, m: usize, k: usize, n: usize) {
     .unwrap();
 
     let mut res = vec![0f32; m * n];
-    ctx.read(c, 0, bytemuck::cast_slice_mut(&mut res));
+    ctx.read_raw(c, 0, bytemuck::cast_slice_mut(&mut res));
 
     for val in res {
         assert_eq!(val, k as f32);
