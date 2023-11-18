@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use logos::{Lexer, Logos, Source};
+use logos::{Lexer, Logos};
 use thiserror::Error;
 
 fn lex_reg_multiplicity<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<u32, LexError> {
@@ -49,7 +49,7 @@ pub enum LexError {
     ParseRegMultiplicity,
     ParseVersionNumber,
     #[default]
-    Other,
+    Unknown,
 }
 
 impl std::fmt::Display for LexError {
@@ -331,16 +331,22 @@ pub struct SourceLocation {
     col: usize,
 }
 
+impl std::fmt::Display for SourceLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "@{}:{} (byte {})", self.line, self.col, self.byte)
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ParseErr {
-    // #[error("Unexpected token \"{:?}\" at {:?}", .0, .1)]
-    // UnexpectedToken(Token, SourceLocation),
     #[error("Unexpected token \"{:?}\"", .0)]
     UnexpectedToken(String, SourceLocation),
     #[error("Unexpected end of file")]
     UnexpectedEof,
     #[error("Lex error \"{:?}\" at {:?}", .0, .1)]
     LexError(LexError, SourceLocation),
+    #[error("Unknown token \"{:?}\" at {:?}", .0, .1)]
+    UnknownToken(String, SourceLocation),
 }
 
 type ParseResult<'a, T> = Result<T, ParseErr>;
@@ -651,8 +657,12 @@ impl<'a> Parser<'a> {
     fn get(&mut self) -> ParseResult<Option<(Token<'a>, TokenPos)>> {
         match self.inner.peek().cloned() {
             Some((Ok(tok), pos)) => Ok(Some((tok, pos))),
+            Some((Err(LexError::Unknown), pos)) => Err(ParseErr::UnknownToken(
+                self.src[pos.clone()].to_string(),
+                self.locate(pos),
+            )),
             Some((Err(err), pos)) => Err(ParseErr::LexError(err, self.locate(pos))),
-            None => return Ok(None),
+            None => Ok(None),
         }
     }
 
@@ -690,7 +700,7 @@ impl<'a> Parser<'a> {
         match self.inner.next() {
             Some((Ok(tok), pos)) => Ok(Some((tok, pos))),
             Some((Err(err), pos)) => Err(ParseErr::LexError(err, self.locate(pos))),
-            None => return Ok(None),
+            None => Ok(None),
         }
     }
 
@@ -704,7 +714,9 @@ impl<'a> Parser<'a> {
         match t.0 {
             Token::StringLiteral(s) => {
                 self.consume(Token::Semicolon)?;
-                Ok(Pragma { value: s.to_string() })
+                Ok(Pragma {
+                    value: s.to_string(),
+                })
             }
             _ => Err(self.unexpected(t)),
         }
@@ -887,17 +899,15 @@ impl<'a> Parser<'a> {
 
         self.consume(Token::Semicolon)?;
 
-        Ok(
-            VarDecl {
-                state_space,
-                ty,
-                vector,
-                alignment,
-                array_bounds,
-                ident: ident.to_string(),
-                multiplicity,
-            },
-        )
+        Ok(VarDecl {
+            state_space,
+            ty,
+            vector,
+            alignment,
+            array_bounds,
+            ident: ident.to_string(),
+            multiplicity,
+        })
     }
 
     fn parse_guard(&mut self) -> ParseResult<Guard> {
@@ -1033,14 +1043,12 @@ impl<'a> Parser<'a> {
                     }
                 };
 
-                Ok(
-                    Operation::Call {
-                        uniform,
-                        ident: ident.to_string(),
-                        ret_param,
-                        params,
-                    },
-                )
+                Ok(Operation::Call {
+                    uniform,
+                    ident: ident.to_string(),
+                    ret_param,
+                    params,
+                })
             }
             Token::ConvertAddress => match self.must_get()?.0 {
                 Token::To => {
@@ -1057,21 +1065,21 @@ impl<'a> Parser<'a> {
             },
             Token::SetPredicate => {
                 let pred = self.parse_predicate()?;
-                    let ty = self.parse_type()?;
+                let ty = self.parse_type()?;
                 Ok(Operation::SetPredicate(pred, ty))
             }
             Token::ShiftLeft => {
-                    let ty = self.parse_type()?;
+                let ty = self.parse_type()?;
                 Ok(Operation::ShiftLeft(ty))
             }
             Token::Branch => {
-                self.consume_match(Token::Uniform)?; 
+                self.consume_match(Token::Uniform)?;
                 Ok(Operation::Branch)
             }
             Token::Return => Ok(Operation::Return),
             Token::Bar => {
                 // cta token is meaningless
-                self.consume_match(Token::Cta)?; 
+                self.consume_match(Token::Cta)?;
                 self.consume(Token::Sync)?;
                 Ok(Operation::BarrierSync)
             }
@@ -1120,10 +1128,9 @@ impl<'a> Parser<'a> {
                         Token::IntegerConst(i) => {
                             Operand::Address(AddressOperand::AddressOffset(ident, i))
                         }
-                        Token::Identifier(s) => Operand::Address(AddressOperand::AddressOffsetVar(
-                            ident,
-                            s.to_string(),
-                        )),
+                        Token::Identifier(s) => {
+                            Operand::Address(AddressOperand::AddressOffsetVar(ident, s.to_string()))
+                        }
                         _ => return Err(self.unexpected(t)),
                     }
                 } else {
@@ -1209,13 +1216,11 @@ impl<'a> Parser<'a> {
         let specifier = self.parse_operation()?;
         let operands = self.parse_operands()?;
 
-        Ok(
-            Instruction {
-                guard,
-                specifier,
-                operands,
-            },
-        )
+        Ok(Instruction {
+            guard,
+            specifier,
+            operands,
+        })
     }
 
     fn parse_statement(&mut self) -> ParseResult<Statement> {
@@ -1250,9 +1255,8 @@ impl<'a> Parser<'a> {
         let ty = self.parse_type()?;
         let ident = loop {
             let t = self.must_pop()?;
-            match t.0 {
-                Token::Identifier(s) => break s.to_string(),
-                _ => {}
+            if let Token::Identifier(s) = t.0 {
+                break s.to_string();
             }
         };
 
@@ -1281,7 +1285,7 @@ impl<'a> Parser<'a> {
             params.push(self.parse_function_param()?);
             let t = self.must_pop()?;
             match t.0 {
-                Token::Comma => {},
+                Token::Comma => {}
                 Token::RightParen => break Ok(params),
                 _ => return Err(self.unexpected(t)),
             }
@@ -1323,6 +1327,7 @@ impl<'a> Parser<'a> {
         };
 
         let noreturn = if let Token::NoReturn = self.must_get()?.0 {
+            self.skip();
             true
         } else {
             false
@@ -1331,17 +1336,15 @@ impl<'a> Parser<'a> {
         let params = self.parse_function_params()?;
         let body = self.parse_statement()?;
 
-        Ok(
-            Function {
-                ident: ident.to_string(),
-                visible,
-                entry,
-                return_param,
-                noreturn,
-                params,
-                body: Box::new(body),
-            },
-        )
+        Ok(Function {
+            ident: ident.to_string(),
+            visible,
+            entry,
+            return_param,
+            noreturn,
+            params,
+            body: Box::new(body),
+        })
     }
 }
 
