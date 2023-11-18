@@ -24,9 +24,9 @@ Pull requests to implement missing features are of course always greatly appreci
 ## Internals
 The code of the library itself is not yet well-documented. However, here is a general overview of the main
 modules comprising `ptoxide`:
-- [`ast.rs`](/src/ast.rs) implements the logic for parsing PTX programs.
-- [`vm.rs`](/src/vm.rs) defines a bytecode format and the virtual machine to execute it.
-- [`compiler.rs`](/src/compiler.rs) implements a simple single-pass compiler to translate a PTX program given as an AST to bytecode.
+- The [`ast`](/src/ast/mod.rs) module implements the logic for parsing PTX programs.
+- The [`vm`](/src/vm.rs) module defines a bytecode format and the virtual machine to execute it.
+- The [`compiler`](/src/compiler.rs) module implements a simple single-pass compiler to translate a PTX program given as an AST to bytecode.
 
 ## Example
 The following code shows a simple example of invoking a kernel to scale a vector of floats by a factor of 2. 
@@ -110,7 +110,7 @@ $L__BB0_2:
 }
 ```
 
-The above kernel was generated from the following CUDA code:
+The above kernel was generated with `nvcc` from the following CUDA code:
 ```c
 __global__ void times_two(float* a, float* b, size_t n) {
     size_t i = blockIdx.x * blockDim.x + threadIdx.x;

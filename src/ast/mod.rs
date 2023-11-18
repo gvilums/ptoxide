@@ -2,8 +2,8 @@ mod lex;
 
 use std::ops::Range;
 
-use lex::Token;
 use lex::LexError;
+use lex::Token;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy)]
@@ -103,24 +103,6 @@ pub enum Type {
     F16x2,
     F16,
     Pred,
-}
-
-impl Type {
-    pub fn size(&self) -> usize {
-        use Type::*;
-        match self {
-            B128 => 16,
-            B64 | U64 | S64 | F64 => 8,
-            B32 | U32 | S32 | F32 | F16x2 => 4,
-            B16 | U16 | S16 | F16 => 2,
-            B8 | U8 | S8 => 1,
-            Pred => 1,
-        }
-    }
-
-    pub fn alignment(&self) -> usize {
-        self.size()
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -404,7 +386,7 @@ impl<'a> Parser<'a> {
     fn parse_version(&mut self) -> ParseResult<Version> {
         let t = self.must_pop()?;
         match t.0 {
-            Token::Version((major, minor)) => Ok(Version{ major, minor }),
+            Token::Version((major, minor)) => Ok(Version { major, minor }),
             _ => Err(self.unexpected(t)),
         }
     }

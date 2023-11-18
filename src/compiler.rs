@@ -156,6 +156,7 @@ impl<'a> FuncCodegenState<'a> {
     }
 
     fn declare_var(&mut self, decl: ast::VarDecl) -> Result<(), CompilationError> {
+        let vmty: vm::Type = decl.ty.into();
         use ast::StateSpace;
         if let ast::Type::Pred = decl.ty {
             // predicates can only exist in the reg state space
@@ -169,12 +170,12 @@ impl<'a> FuncCodegenState<'a> {
             }
             let reg = self.alloc_reg();
             self.var_map.insert(decl.ident, Variable::Register(reg));
-            return Ok(())
+            return Ok(());
         }
 
         let count = decl.array_bounds.iter().product::<u32>();
-        let size = decl.ty.size() * count as usize;
-        let align = decl.ty.alignment();
+        let size = vmty.size() * count as usize;
+        let align = vmty.alignment();
         assert!(align.count_ones() == 1);
         // align to required alignment
 
@@ -190,10 +191,10 @@ impl<'a> FuncCodegenState<'a> {
                 let loc = Variable::Stack(self.stack_size as isize);
                 self.stack_size += size;
                 self.var_map.insert(decl.ident, loc);
-            },
+            }
             StateSpace::Global => todo!(),
             StateSpace::Constant => todo!(),
-            StateSpace::Register => unreachable!()
+            StateSpace::Register => unreachable!(),
         }
         Ok(())
     }
@@ -226,21 +227,22 @@ impl<'a> FuncCodegenState<'a> {
             params.push(p);
         }
         self.num_args = params.len();
-        for (idx, param)in params.into_iter().enumerate() {
+        for (idx, param) in params.into_iter().enumerate() {
             if let ast::Type::Pred = param.ty {
                 // this should raise an error as predicates can only exist in the reg state space
                 todo!()
             }
             // for now, only handle parameters in the .param state space
 
-            self.var_map.insert(param.ident, Variable::Register(vm::GenericReg(idx)));
+            self.var_map
+                .insert(param.ident, Variable::Register(vm::GenericReg(idx)));
         }
         Ok(())
     }
 
     fn construct_immediate(
         &mut self,
-        _ty: ast::Type,
+        _ty: vm::Type,
         imm: ast::Immediate,
     ) -> Result<vm::GenericReg, CompilationError> {
         let vmconst = match imm {
@@ -257,7 +259,7 @@ impl<'a> FuncCodegenState<'a> {
 
     fn get_src_reg(
         &mut self,
-        ty: ast::Type,
+        ty: vm::Type,
         op: &ast::Operand,
     ) -> Result<vm::RegOperand, CompilationError> {
         use ast::Operand;
@@ -271,7 +273,7 @@ impl<'a> FuncCodegenState<'a> {
 
     fn get_dst_reg(
         &mut self,
-        _ty: ast::Type,
+        _ty: vm::Type,
         op: &ast::Operand,
     ) -> Result<vm::GenericReg, CompilationError> {
         use ast::Operand;
@@ -283,7 +285,7 @@ impl<'a> FuncCodegenState<'a> {
 
     fn reg_dst_1src(
         &mut self,
-        ty: ast::Type,
+        ty: vm::Type,
         ops: &[ast::Operand],
     ) -> Result<(vm::GenericReg, vm::RegOperand), CompilationError> {
         let [dst, src] = ops else { todo!() };
@@ -294,7 +296,7 @@ impl<'a> FuncCodegenState<'a> {
 
     fn reg_dst_2src(
         &mut self,
-        ty: ast::Type,
+        ty: vm::Type,
         ops: &[ast::Operand],
     ) -> Result<(vm::GenericReg, vm::RegOperand, vm::RegOperand), CompilationError> {
         let [dst, lhs_op, rhs_op] = ops else { todo!() };
@@ -306,7 +308,7 @@ impl<'a> FuncCodegenState<'a> {
 
     fn reg_dst_3src(
         &mut self,
-        ty: ast::Type,
+        ty: vm::Type,
         ops: &[ast::Operand],
     ) -> Result<
         (
@@ -342,15 +344,15 @@ impl<'a> FuncCodegenState<'a> {
                 {
                     Variable::Register(reg) => reg.into(),
                     Variable::Absolute(addr) => self
-                        .construct_immediate(ast::Type::U64, ast::Immediate::UInt64(addr as u64))?
+                        .construct_immediate(vm::Type::U64, ast::Immediate::UInt64(addr as u64))?
                         .into(),
                     Variable::Stack(addr) => {
                         let dst = self.construct_immediate(
-                            ast::Type::S64,
+                            vm::Type::S64,
                             ast::Immediate::Int64(addr as i64),
                         )?;
                         self.instructions.push(vm::Instruction::Add(
-                            ast::Type::S64,
+                            vm::Type::S64,
                             dst,
                             dst.into(),
                             ast::SpecialReg::StackPtr.into(),
@@ -368,9 +370,9 @@ impl<'a> FuncCodegenState<'a> {
                 {
                     Variable::Register(reg) => {
                         let dst = self
-                            .construct_immediate(ast::Type::S64, ast::Immediate::Int64(*offset))?;
+                            .construct_immediate(vm::Type::S64, ast::Immediate::Int64(*offset))?;
                         self.instructions.push(vm::Instruction::Add(
-                            ast::Type::S64,
+                            vm::Type::S64,
                             dst,
                             dst.into(),
                             reg.into(),
@@ -379,17 +381,17 @@ impl<'a> FuncCodegenState<'a> {
                     }
                     Variable::Absolute(addr) => self
                         .construct_immediate(
-                            ast::Type::U64,
+                            vm::Type::U64,
                             ast::Immediate::UInt64(addr as u64 + *offset as u64),
                         )?
                         .into(),
                     Variable::Stack(addr) => {
                         let dst = self.construct_immediate(
-                            ast::Type::S64,
+                            vm::Type::S64,
                             ast::Immediate::Int64(addr as i64 + *offset),
                         )?;
                         self.instructions.push(vm::Instruction::Add(
-                            ast::Type::S64,
+                            vm::Type::S64,
                             dst,
                             dst.into(),
                             ast::SpecialReg::StackPtr.into(),
@@ -429,7 +431,7 @@ impl<'a> FuncCodegenState<'a> {
                 let dst_reg = self.var_map.get_reg(&ident)?;
                 let src_op = self.resolve_addr_operand(&addr_op)?;
                 self.instructions.push(vm::Instruction::Load(
-                    ty,
+                    ty.into(),
                     resolve_state_space(st)?,
                     dst_reg,
                     src_op,
@@ -446,13 +448,14 @@ impl<'a> FuncCodegenState<'a> {
                 let src_reg = self.var_map.get_reg(&ident)?;
                 let dst_op = self.resolve_addr_operand(&addr_op)?;
                 self.instructions.push(vm::Instruction::Store(
-                    ty,
+                    ty.into(),
                     resolve_state_space(st)?,
                     src_reg.into(),
                     dst_op,
                 ))
             }
             Operation::Move(ty) => {
+                let ty = ty.into();
                 let [dst, src] = get_ops(instr.operands)?;
                 let dst_reg = self.get_dst_reg(ty, &dst)?;
                 let src_reg =
@@ -465,11 +468,11 @@ impl<'a> FuncCodegenState<'a> {
                                 // this is an LEA operation, not just a normal mov
                                 Variable::Stack(offset) => {
                                     let imm = self.construct_immediate(
-                                        ast::Type::U64,
+                                        vm::Type::U64,
                                         ast::Immediate::UInt64(offset as u64),
                                     )?;
                                     self.instructions.push(vm::Instruction::Add(
-                                        ast::Type::S64,
+                                        vm::Type::S64,
                                         dst_reg,
                                         imm.into(),
                                         ast::SpecialReg::StackPtr.into(),
@@ -495,18 +498,21 @@ impl<'a> FuncCodegenState<'a> {
                     .push(vm::Instruction::Move(ty, dst_reg, src_reg));
             }
             Operation::Add(ty) => {
+                let ty = ty.into();
                 let (dst_reg, lhs_reg, rhs_reg) =
                     self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::Add(ty, dst_reg, lhs_reg, rhs_reg));
             }
             Operation::Multiply(mode, ty) => {
+                let ty = ty.into();
                 let (dst_reg, lhs_reg, rhs_reg) =
                     self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::Mul(ty, mode, dst_reg, lhs_reg, rhs_reg));
             }
             Operation::MultiplyAdd(mode, ty) => {
+                let ty = ty.into();
                 let (dst, a, b, c) = self.reg_dst_3src(ty, &instr.operands)?;
                 let tmp = self.alloc_reg();
                 self.instructions
@@ -515,22 +521,27 @@ impl<'a> FuncCodegenState<'a> {
                     .push(vm::Instruction::Add(ty, dst, tmp.into(), c));
             }
             Operation::Sub(ty) => {
+                let ty = ty.into();
                 let (dst, a, b) = self.reg_dst_2src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Sub(ty, dst, a, b))
             }
             Operation::Or(ty) => {
+                let ty = ty.into();
                 let (dst, a, b) = self.reg_dst_2src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Or(ty, dst, a, b))
             }
             Operation::And(ty) => {
+                let ty = ty.into();
                 let (dst, a, b) = self.reg_dst_2src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::And(ty, dst, a, b))
             }
             Operation::Not(ty) => {
+                let ty = ty.into();
                 let (dst, src) = self.reg_dst_1src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Not(ty, dst, src))
             }
             Operation::FusedMulAdd(_, ty) => {
+                let ty = ty.into();
                 let (dst, a, b, c) = self.reg_dst_3src(ty, &instr.operands)?;
                 let tmp = self.alloc_reg();
                 self.instructions
@@ -539,10 +550,13 @@ impl<'a> FuncCodegenState<'a> {
                     .push(vm::Instruction::Add(ty, dst, tmp.into(), c));
             }
             Operation::Negate(ty) => {
+                let ty = ty.into();
                 let (dst, src) = self.reg_dst_1src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Neg(ty, dst, src));
             }
             Operation::Convert { from, to } => {
+                let from = from.into();
+                let to = to.into();
                 let (dst, src) = self.reg_dst_1src(from, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Convert {
                     dst_type: to,
@@ -553,17 +567,20 @@ impl<'a> FuncCodegenState<'a> {
             }
             Operation::ConvertAddress(_ty, _st) => todo!(),
             Operation::ConvertAddressTo(ty, _st) => {
+                let ty = ty.into();
                 // TODO handle different state spaces
                 // for now, just move the address register into the destination register
                 let (dst, src) = self.reg_dst_1src(ty, &instr.operands)?;
                 self.instructions.push(vm::Instruction::Move(ty, dst, src));
             }
             Operation::SetPredicate(pred, ty) => {
+                let ty = ty.into();
                 let (dst, a, b) = self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
                     .push(vm::Instruction::SetPredicate(ty, pred, dst, a, b));
             }
             Operation::ShiftLeft(ty) => {
+                let ty = ty.into();
                 let (dst_reg, lhs_reg, rhs_reg) =
                     self.reg_dst_2src(ty, instr.operands.as_slice())?;
                 self.instructions
@@ -575,7 +592,8 @@ impl<'a> FuncCodegenState<'a> {
                 ret_param,
                 mut params,
             } => {
-                let Some(vm::Symbol::Function(descriptor)) = self.parent.symbol_map.get(&ident) else {
+                let Some(vm::Symbol::Function(descriptor)) = self.parent.symbol_map.get(&ident)
+                else {
                     return Err(CompilationError::UndefinedSymbol(ident.clone()));
                 };
 
@@ -583,19 +601,22 @@ impl<'a> FuncCodegenState<'a> {
                     params.push(ret_param);
                 }
                 for param in &params {
-                    match self.var_map.get(param).cloned().ok_or_else(|| {
-                        CompilationError::UndefinedSymbol(ident.to_string())
-                    })? {
+                    match self
+                        .var_map
+                        .get(param)
+                        .cloned()
+                        .ok_or_else(|| CompilationError::UndefinedSymbol(ident.to_string()))?
+                    {
                         Variable::Register(reg) => {
                             self.instructions.push(vm::Instruction::PushArg(reg.into()));
-                        },
+                        }
                         Variable::Stack(offset) => {
                             let imm = self.construct_immediate(
-                                ast::Type::S64,
+                                vm::Type::S64,
                                 ast::Immediate::Int64(offset as i64),
                             )?;
                             self.instructions.push(vm::Instruction::Add(
-                                ast::Type::S64,
+                                vm::Type::S64,
                                 imm,
                                 imm.into(),
                                 ast::SpecialReg::StackPtr.into(),
@@ -604,7 +625,7 @@ impl<'a> FuncCodegenState<'a> {
                         }
                         Variable::Absolute(addr) => {
                             let imm = self.construct_immediate(
-                                ast::Type::U64,
+                                vm::Type::U64,
                                 ast::Immediate::UInt64(addr as u64),
                             )?;
                             self.instructions.push(vm::Instruction::PushArg(imm.into()));
@@ -623,10 +644,10 @@ impl<'a> FuncCodegenState<'a> {
                         None => return Err(CompilationError::UndefinedSymbol(param.clone())),
                     }
                 }
-            },
+            }
             Operation::BarrierSync => match instr.operands.as_slice() {
                 [idx] => {
-                    let src_reg = self.get_src_reg(ast::Type::U32, idx)?;
+                    let src_reg = self.get_src_reg(vm::Type::U32, idx)?;
                     self.instructions.push(vm::Instruction::BarrierSync {
                         idx: src_reg,
                         cnt: None,

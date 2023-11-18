@@ -1,9 +1,70 @@
 use std::collections::HashMap;
 
 use crate::ast::MulMode;
-use crate::ast::SpecialReg;
 use crate::ast::PredicateOp;
-use crate::ast::Type;
+use crate::ast::SpecialReg;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Type {
+    U128,
+    U64,
+    U32,
+    U16,
+    U8,
+    S64,
+    S32,
+    S16,
+    S8,
+    F64,
+    F32,
+    F16x2,
+    F16,
+    Pred,
+}
+
+impl Type {
+    pub fn size(&self) -> usize {
+        use Type::*;
+        match self {
+            U128 => 16,
+            U64 | S64 | F64 => 8,
+            U32 | S32 | F32 | F16x2 => 4,
+            U16 | S16 | F16 => 2,
+            U8 | S8 => 1,
+            Pred => 1,
+        }
+    }
+
+    pub fn alignment(&self) -> usize {
+        self.size()
+    }
+}
+
+impl From<crate::ast::Type> for Type {
+    fn from(value: crate::ast::Type) -> Self {
+        use crate::ast;
+        match value {
+            ast::Type::B128 => Type::U128,
+            ast::Type::B64 => Type::U64,
+            ast::Type::B32 => Type::U32,
+            ast::Type::B16 => Type::U16,
+            ast::Type::B8 => Type::U8,
+            ast::Type::U64 => Type::U64,
+            ast::Type::U32 => Type::U32,
+            ast::Type::U16 => Type::U16,
+            ast::Type::U8 => Type::U8,
+            ast::Type::S64 => Type::S64,
+            ast::Type::S32 => Type::S32,
+            ast::Type::S16 => Type::S16,
+            ast::Type::S8 => Type::S8,
+            ast::Type::F64 => Type::F64,
+            ast::Type::F32 => Type::F32,
+            ast::Type::F16x2 => Type::F16x2,
+            ast::Type::F16 => Type::F16,
+            ast::Type::Pred => Type::Pred,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Symbol {
@@ -268,8 +329,7 @@ impl ThreadState {
 
     fn frame_teardown(&mut self) {
         let meta = self.stack_frames.pop().unwrap();
-        self.stack_data
-            .truncate(meta.stack_base);
+        self.stack_data.truncate(meta.stack_base);
         self.regs.resize(meta.reg_base + meta.num_args, 0);
         self.iptr = meta.return_addr;
     }
@@ -358,7 +418,6 @@ impl<T> From<DevicePointer<T>> for RawDevicePointer {
         Self(value.0)
     }
 }
-
 
 pub enum Argument<'a> {
     Ptr(RawDevicePointer),
@@ -499,6 +558,21 @@ macro_rules! binary_op {
     };
 }
 
+macro_rules! binary_op2 {
+    ($op:path, $threadop:expr, $tyop:expr, $dstop:expr, $aop:expr, $bop:expr;
+        $($target_ty:pat, $getter:ident, $setter:ident);*$(;)?) => {
+        match ($tyop) {
+        $(
+            $target_ty => {
+                let val = $op($threadop.$getter($aop), $threadop.$getter($bop));
+                $threadop.$setter($dstop, val);
+            }
+        )*
+            _ => todo!()
+        }
+    };
+}
+
 macro_rules! unary_op {
     ($threadop:expr, $tyop:expr, $dstop:expr, $srcop:expr;
         $($target_ty:pat, $op:ident, $getter:ident, $setter:ident);*$(;)?) => {
@@ -601,17 +675,20 @@ impl Context {
     }
 
     pub fn alloc<T>(&mut self, count: usize) -> DevicePointer<T> {
-        self.alloc_raw(count * std::mem::size_of::<T>(), std::mem::align_of::<T>()).into()
+        self.alloc_raw(count * std::mem::size_of::<T>(), std::mem::align_of::<T>())
+            .into()
     }
 
-    pub fn read<T>(&mut self, src: DevicePointer<T>, dst: & mut [T])
-    where T: bytemuck::NoUninit + bytemuck::AnyBitPattern,
+    pub fn read<T>(&mut self, src: DevicePointer<T>, dst: &mut [T])
+    where
+        T: bytemuck::NoUninit + bytemuck::AnyBitPattern,
     {
         self.read_raw(src.into(), 0, bytemuck::cast_slice_mut(dst));
     }
 
-    pub fn write<T>(&mut self, dst: DevicePointer<T>, src: &[T]) 
-    where T: bytemuck::NoUninit + bytemuck::AnyBitPattern,
+    pub fn write<T>(&mut self, dst: DevicePointer<T>, src: &[T])
+    where
+        T: bytemuck::NoUninit + bytemuck::AnyBitPattern,
     {
         self.write_raw(dst.into(), 0, bytemuck::cast_slice(src));
     }
@@ -698,27 +775,27 @@ impl Context {
                 let size = ty.size();
                 data[addr..addr + size].copy_from_slice(&buf[..size]);
             }
-            Instruction::Sub(ty, dst, a, b) => {
-                use std::ops::Sub;
-                binary_op! {
-                    thread, ty, dst, a, b;
-                    Type::U64 | Type::B64, sub, get_u64, set_u64;
-                    Type::S64, sub, get_i64, set_i64;
-                    Type::U32 | Type::B32, sub, get_u32, set_u32;
-                    Type::S32, sub, get_i32, set_i32;
-                    Type::F32, sub, get_f32, set_f32;
-                };
-            }
             Instruction::Add(ty, dst, a, b) => {
                 use std::ops::Add;
                 binary_op! {
                     thread, ty, dst, a, b;
-                    Type::U64 | Type::B64, add, get_u64, set_u64;
+                    Type::U64, add, get_u64, set_u64;
                     Type::S64, add, get_i64, set_i64;
-                    Type::U32 | Type::B32, add, get_u32, set_u32;
+                    Type::U32, add, get_u32, set_u32;
                     Type::S32, add, get_i32, set_i32;
                     Type::F64, add, get_f64, set_f64;
                     Type::F32, add, get_f32, set_f32;
+                };
+            }
+            Instruction::Sub(ty, dst, a, b) => {
+                binary_op2! {
+                    std::ops::Sub::sub, thread, ty, dst, a, b;
+                    Type::U64, get_u64, set_u64;
+                    Type::S64, get_i64, set_i64;
+                    Type::U32, get_u32, set_u32;
+                    Type::S32, get_i32, set_i32;
+                    Type::F64, get_f64, set_f64;
+                    Type::F32, get_f32, set_f32;
                 };
             }
             Instruction::Mul(ty, mode, dst, a, b) => {
@@ -727,10 +804,11 @@ impl Context {
                     MulMode::Low => {
                         binary_op! {
                             thread, ty, dst, a, b;
-                            Type::U64 | Type::B64, mul, get_u64, set_u64;
+                            Type::U64, mul, get_u64, set_u64;
                             Type::S64, mul, get_i64, set_i64;
-                            Type::U32 | Type::B32, mul, get_u32, set_u32;
+                            Type::U32, mul, get_u32, set_u32;
                             Type::S32, mul, get_i32, set_i32;
+                            Type::F64, mul, get_f64, set_f64;
                             Type::F32, mul, get_f32, set_f32;
                         }
                     }
@@ -753,8 +831,8 @@ impl Context {
                 binary_op! {
                     thread, ty, dst, a, b;
                     Type::Pred, bitor, get_pred, set_pred;
-                    Type::U64 | Type::B64 | Type::S64, bitor, get_u64, set_u64;
-                    Type::U32 | Type::B32 | Type::S32, bitor, get_u32, set_u32;
+                    Type::U64 | Type::S64, bitor, get_u64, set_u64;
+                    Type::U32 | Type::S32, bitor, get_u32, set_u32;
                 };
             }
             Instruction::And(ty, dst, a, b) => {
@@ -762,8 +840,8 @@ impl Context {
                 binary_op! {
                     thread, ty, dst, a, b;
                     Type::Pred, bitand, get_pred, set_pred;
-                    Type::U64 | Type::B64 | Type::S64, bitand, get_u64, set_u64;
-                    Type::U32 | Type::B32 | Type::S32, bitand, get_u32, set_u32;
+                    Type::U64 | Type::S64, bitand, get_u64, set_u64;
+                    Type::U32 | Type::S32, bitand, get_u32, set_u32;
                 };
             }
             Instruction::Neg(ty, dst, src) => {
@@ -780,17 +858,17 @@ impl Context {
                 unary_op! {
                     thread, ty, dst, src;
                     Type::Pred, not, get_pred, set_pred;
-                    Type::U64 | Type::B64, not, get_u64, set_u64;
-                    Type::U32 | Type::B32, not, get_u32, set_u32;
+                    Type::U64, not, get_u64, set_u64;
+                    Type::U32, not, get_u32, set_u32;
                 }
             }
             Instruction::ShiftLeft(ty, dst, a, b) => {
                 use std::ops::Shl;
                 binary_op! {
                     thread, ty, dst, a, b;
-                    Type::B64, shl, get_u64, set_u64;
-                    Type::B32, shl, get_u32, set_u32;
-                    Type::B16, shl, get_u16, set_u16;
+                    Type::U64, shl, get_u64, set_u64;
+                    Type::U32, shl, get_u32, set_u32;
+                    Type::U16, shl, get_u16, set_u16;
                 };
             }
             Instruction::Convert {
@@ -826,9 +904,9 @@ impl Context {
             Instruction::SetPredicate(ty, op, dst, a, b) => {
                 comparison_op! {
                     thread, ty, op, dst, a, b;
-                    Type::U64 | Type::B64, get_u64;
+                    Type::U64, get_u64;
                     Type::S64, get_i64;
-                    Type::U32 | Type::B32, get_u32;
+                    Type::U32, get_u32;
                     Type::S32, get_i32;
                     Type::F32, get_f32;
                 };
@@ -855,17 +933,17 @@ impl Context {
             Instruction::PushArg(reg) => {
                 let val = thread.get(reg);
                 thread.regs.push(val);
-            },
+            }
             Instruction::PopArg(reg) => {
                 let val = thread.regs.pop().unwrap();
                 if let Some(reg) = reg {
                     thread.set(reg, val);
                 }
-            },
+            }
             Instruction::Call(desc_idx) => {
                 let desc = self.descriptors[desc_idx];
                 thread.frame_setup(desc);
-            },
+            }
         }
         if thread.stack_frames.is_empty() {
             Ok(ThreadResult::Exit)
@@ -1029,10 +1107,7 @@ mod test {
                 GenericReg(2),
                 GenericReg(2).into(),
             ),
-            Instruction::Const(
-                GenericReg(3),
-                Constant::U64(8),
-            ),
+            Instruction::Const(GenericReg(3), Constant::U64(8)),
             Instruction::Mul(
                 Type::U64,
                 MulMode::Low,
