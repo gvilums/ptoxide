@@ -205,3 +205,38 @@ fn gemm() {
         ctx.reset_mem();
     }
 }
+
+
+#[test]
+fn times_two() {
+    let a: Vec<f32> = vec![1., 2., 3., 4., 5.];
+    let mut b: Vec<f32> = vec![0.; a.len()];
+
+    let n = a.len();
+
+    let kernel = std::fs::read_to_string("kernels/times_two.ptx").expect("read kernel file");
+    let mut ctx = Context::new_with_module(&kernel).expect("compile kernel");
+
+    const BLOCK_SIZE: u32 = 256;
+    let grid_size = (n as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    let da = ctx.alloc(n);
+    let db = ctx.alloc(n);
+
+    ctx.write(da, &a);
+    ctx.run(
+        LaunchParams::func_id(0)
+            .grid1d(grid_size)
+            .block1d(BLOCK_SIZE),
+        &[
+            Argument::ptr(da),
+            Argument::ptr(db),
+            Argument::U64(n as u64),
+        ],
+    ).expect("execute kernel");
+
+    ctx.read(db, &mut b);
+    for (x, y) in a.into_iter().zip(b) {
+        assert_eq!(2. * x, y);
+    }
+}

@@ -6,57 +6,67 @@ It was created as a project to learn more about the CUDA excution model.
 Kernels are executed by compiling them to a custom bytecode format, 
 which is then executed inside of a virtual machine.
 
+## Supported Features
+`ptoxide` supports most fundamental PTX features, such as:
+- Global, shared, and local (stack) memory
+- (Recursive) function calls
+- Thread synchronization using barriers
+- Various arithmetic operations on integers and floating point values
+
+These features are sufficient to execute the kernels found in the [kernels](/kernels) directory,
+such as simple vector operations, matrix multiplication, 
+and matrix transposition using a shared buffer.
+
+However, many features and instructions are still missing, and you will probably encounter `todo!`s 
+and parsing errors when attempting to execute more complex programs.
+Pull requests to implement missing features are of course always greatly appreciated!
 
 ## Internals
+The code of the library itself is not yet well-documented. However, here is a general overview of the main
+modules comprising `ptoxide`:
 - [`ast.rs`](/src/ast.rs) implements the logic for parsing PTX programs.
 - [`vm.rs`](/src/vm.rs) defines a bytecode format and the virtual machine to execute it.
 - [`compiler.rs`](/src/compiler.rs) implements a simple single-pass compiler to translate a PTX program given as an AST to bytecode.
 
 ## Example
-
+The following code shows a simple example of invoking a kernel to scale a vector of floats by a factor of 2. 
 
 ```rust
 fn main() {
-    let a = vec![1, 2, 3, 4, 5];
-    let b = vec![0; a.len()];
+    let a: Vec<f32> = vec![1., 2., 3., 4., 5.];
+    let mut b: Vec<f32> = vec![0.; a.len()];
 
-    times_two(&a, &mut b).expect("ptoxide error");
+    let n = a.len();
 
-    for (a, b) in a.iter().zip(b) {
-        assert_eq!(2 * a, b);
-    }
-}
-
-fn times_two(src: &[f32], dst: &mut [f32]) -> VmResult<()> {
-    assert!(src.len() == dst.len());
-    let n = src.len();
-
-    let kernel = std::fs::read_to_string("kernel.ptx");
-    let mut ctx = Context::new_with_module(&kernel)?;
+    let kernel = std::fs::read_to_string("times_two.ptx").expect("read kernel file");
+    let mut ctx = Context::new_with_module(&kernel).expect("compile kernel");
 
     const BLOCK_SIZE: u32 = 256;
     let grid_size = (n as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    let a = ctx.alloc(n);
-    let b = ctx.alloc(n);
+    let da = ctx.alloc(n);
+    let db = ctx.alloc(n);
 
-    ctx.write(a, src);
+    ctx.write(da, &a);
     ctx.run(
         LaunchParams::func_id(0)
             .grid1d(grid_size)
             .block1d(BLOCK_SIZE),
         &[
-            Argument::Ptr(a),
-            Argument::Ptr(b),
-            Argument::U64(src.len()),
+            Argument::ptr(da),
+            Argument::ptr(db),
+            Argument::U64(n as u64),
         ],
-    )?;
+    ).expect("execute kernel");
 
-    ctx.read(b, dst);
+    ctx.read(db, &mut b);
+    for (x, y) in a.into_iter().zip(b) {
+        assert_eq!(2. * x, y);
+    }
 }
 ```
 
-Where `kernel.ptx` is placed in the working directory and has the following contents.
+Where `times_two.ptx` is placed in the working directory and has the following contents.
 
 ```ptx
 .version 8.3
@@ -97,6 +107,7 @@ Where `kernel.ptx` is placed in the working directory and has the following cont
 
 $L__BB0_2:
 	ret;
+}
 ```
 
 The above kernel was generated from the following CUDA code:
@@ -112,3 +123,6 @@ __global__ void times_two(float* a, float* b, size_t n) {
 
 ## Reading PTX
 To learn more about the PTX ISA, check out NVIDIA's [documentation](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html).
+
+## License
+`ptoxdide` is dual-licensed under the Apache License version 2.0 and the MIT license, at your choosing.
