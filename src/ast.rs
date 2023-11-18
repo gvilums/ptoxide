@@ -337,66 +337,7 @@ pub enum ParseErr {
     LexError(LexError, SourceLocation),
 }
 
-type ParseResult<'a, T> = Result<(T, Scanner<'a>), ParseErr>;
-
-#[derive(Clone, Debug)]
-struct Scanner<'a> {
-    // src: &'a str,
-    // tokens: &'a [(Token<'a>, Range<usize>)],
-    inner: Lexer<'a, Token<'a>>,
-}
-
-impl<'a> Scanner<'a> {
-    fn new(src: &'a str, tokens: &'a [(Token, Range<usize>)]) -> Self {
-        Scanner { src, tokens }
-    }
-
-    fn get(&self) -> Option<&'a Token> {
-        self.tokens.first()
-    }
-
-    fn must_get(&self) -> Result<&'a Token, ParseErr> {
-        self.get().ok_or(ParseErr::UnexpectedEof)
-    }
-
-    fn skip(&mut self) {
-        if self.tokens.len() > 0 {
-            self.tokens = &self.tokens[1..];
-        }
-    }
-
-    fn consume(&mut self, token: Token) -> Result<(), ParseErr> {
-        let head = self.get().ok_or(ParseErr::UnexpectedEof)?;
-        if head == &token {
-            self.skip();
-            Ok(())
-        } else {
-            Err(ParseErr::UnexpectedToken(head.clone()))
-        }
-    }
-
-    fn consume_match(&mut self, token: Token) -> bool {
-        let Some(head) = self.get() else {
-            return false;
-        };
-        if head == &token {
-            self.skip();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn pop(&mut self) -> Option<&'a Token> {
-        let head = self.get();
-        self.skip();
-        head
-    }
-
-    fn must_pop(&mut self) -> Result<&'a Token, ParseErr> {
-        self.pop().ok_or(ParseErr::UnexpectedEof)
-    }
-}
+type ParseResult<'a, T> = Result<T, ParseErr>;
 
 type Ident = String;
 
@@ -652,13 +593,14 @@ pub enum Operation {
     Return,
 }
 
+type TokenPos<'a> = Range<usize>;
+
 struct Parser<'a> {
     src: &'a str,
     inner: std::iter::Peekable<logos::SpannedIter<'a, Token<'a>>>,
 }
 
 impl<'a> Parser<'a> {
-
     pub fn new(src: &str) -> Self {
         Self {
             src,
@@ -666,740 +608,781 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn get(&mut self) {
-        self.inner.peek()
-    }
-}
+    fn locate(&self, span: &Range<usize>) -> SourceLocation {
+        let text = self.src.as_bytes();
 
-pub fn find_position(text: &str, byte_pos: usize) -> SourceLocation { 
-    let text = text.as_bytes();
+        let mut line = 1;
+        let mut col = 1;
 
-    let mut line = 1;
-    let mut col = 1;
+        let end = span.end.min(text.len());
 
-    let end = byte_pos.min(text.len());
+        for &c in &text[..end] {
+            if c == b'\n' {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
 
-    for &c in &text[..end] {
-        if c == b'\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
+        SourceLocation {
+            byte: span.start,
+            line,
+            col,
         }
     }
 
-    SourceLocation { byte: byte_pos, line, col }
+    fn unexpected(&self, (token, pos): (Token, TokenPos)) -> ParseErr {
+        ParseErr::UnexpectedToken(token.to_string(), self.locate(&pos))
+    }
+
+    fn unexpected_ref(&self, (token, pos): (&Token, TokenPos)) -> ParseErr {
+        ParseErr::UnexpectedToken(token.to_string(), self.locate(&pos))
+    }
+
+    fn get(&mut self) -> ParseResult<Option<(&'a Token, TokenPos)>> {
+        match self.inner.peek() {
+            Some((Ok(tok), pos)) => Ok(Some((tok, pos.clone()))),
+            Some((Err(err), pos)) => Err(ParseErr::LexError(*err, self.locate(pos))),
+            None => return Ok(None),
+        }
+    }
+
+    fn must_get(&self) -> Result<(&'a Token, TokenPos), ParseErr> {
+        self.get()?.ok_or(ParseErr::UnexpectedEof)
+    }
+
+    fn skip(&mut self) {
+        self.inner.next();
+    }
+
+    fn consume(&mut self, token: Token) -> ParseResult<()> {
+        let head = self.must_get()?;
+        if head.0 == &token {
+            self.skip();
+            Ok(())
+        } else {
+            Err(self.unexpected_ref(head))
+        }
+    }
+
+    fn consume_match(&mut self, token: Token) -> ParseResult<bool> {
+        let Some(head) = self.get()? else {
+            return Ok(false);
+        };
+        if head.0 == &token {
+            self.skip();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn pop(&mut self) -> ParseResult<Option<(Token<'a>, TokenPos)>> {
+        match self.inner.next() {
+            Some((Ok(tok), pos)) => Ok(Some((tok, pos))),
+            Some((Err(err), pos)) => Err(ParseErr::LexError(err, self.locate(&pos))),
+            None => return Ok(None),
+        }
+    }
+
+    fn must_pop(&mut self) -> Result<(Token<'a>, TokenPos), ParseErr> {
+        self.pop()?.ok_or(ParseErr::UnexpectedEof)
+    }
+
+    fn parse_pragma(&mut self) -> ParseResult<Pragma> {
+        self.consume(Token::Pragma)?;
+        let t = self.must_pop()?;
+        match t.0 {
+            Token::StringLiteral(s) => {
+                self.consume(Token::Semicolon)?;
+                Ok(Pragma { value: s.clone() })
+            }
+            _ => Err(self.unexpected(t)),
+        }
+    }
+
+    fn parse_version(&mut self) -> ParseResult<Version> {
+        self.consume(Token::Version)?;
+        let t = self.must_pop()?;
+        match t.0 {
+            Token::VersionNumber(version) => Ok((*version, scanner)),
+            _ => Err(self.unexpected(t)),
+        }
+    }
+
+    fn parse_target(&mut self) -> ParseResult<String> {
+        self.consume(Token::Target)?;
+        let t = self.must_pop()?;
+        match t.0 {
+            Token::Identifier(target) => Ok(target.to_string()),
+            _ => Err(self.unexpected(t)),
+        }
+    }
+
+    fn parse_address_size(&mut self) -> ParseResult<AddressSize> {
+        self.consume(Token::AddressSize)?;
+        let t = self.must_pop()?;
+        let Token::IntegerConst(size) = t.0 else {
+            return Err(self.unexpected(t));
+        };
+        match size {
+            32 => Ok(AddressSize::Adr32),
+            64 => Ok(AddressSize::Adr64),
+            _ => Ok(AddressSize::Other),
+        }
+    }
+
+    fn parse_module(&mut self) -> ParseResult<Module> {
+        let mut directives = Vec::new();
+        while self.get()?.is_some() {
+            match self.parse_directive() {
+                Ok(directive) => {
+                    directives.push(directive);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(Module(directives))
+    }
+
+    fn parse_array_bounds(&mut self) -> ParseResult<Vec<u32>> {
+        let mut bounds = Vec::new();
+        loop {
+            match self.get()? {
+                Some((Token::LeftBracket, _)) => self.skip(),
+                _ => break Ok(bounds),
+            }
+            let t = self.must_pop()?;
+            let Token::IntegerConst(bound) = t.0 else {
+                return Err(self.unexpected(t));
+            };
+            self.consume(Token::RightBracket)?;
+            // todo clean up raw casts
+            bounds.push(bound as u32);
+        }
+    }
+
+    fn parse_state_space(&mut self) -> ParseResult<StateSpace> {
+        let t = self.must_pop()?;
+        match t.0 {
+            Token::Global => Ok(StateSpace::Global),
+            Token::Local => Ok(StateSpace::Local),
+            Token::Shared => Ok(StateSpace::Shared),
+            Token::Reg => Ok(StateSpace::Register),
+            Token::Param => Ok(StateSpace::Parameter),
+            Token::Const => Ok(StateSpace::Constant),
+            _ => Err(self.unexpected(t)),
+        }
+    }
+
+    fn parse_alignment(&mut self) -> ParseResult<u32> {
+        self.consume(Token::Align)?;
+        let t = self.must_pop()?;
+        let alignment = match t.0 {
+            Token::IntegerConst(i) => i as u32,
+            _ => return Err(self.unexpected(t)),
+        };
+        Ok(alignment)
+    }
+
+    fn parse_type(&mut self) -> ParseResult<Type> {
+        let t = self.must_pop()?;
+        let ty = match t.0 {
+            Token::Bit8 => Type::B8,
+            Token::Bit16 => Type::B16,
+            Token::Bit32 => Type::B32,
+            Token::Bit64 => Type::B64,
+            Token::Bit128 => Type::B128,
+            Token::Unsigned8 => Type::U8,
+            Token::Unsigned16 => Type::U16,
+            Token::Unsigned32 => Type::U32,
+            Token::Unsigned64 => Type::U64,
+            Token::Signed8 => Type::S8,
+            Token::Signed16 => Type::S16,
+            Token::Signed32 => Type::S32,
+            Token::Signed64 => Type::S64,
+            Token::Float16 => Type::F16,
+            Token::Float16x2 => Type::F16x2,
+            Token::Float32 => Type::F32,
+            Token::Float64 => Type::F64,
+            Token::Predicate => Type::Pred,
+            _ => return Err(self.unexpected(t)),
+        };
+        Ok(ty)
+    }
+
+    fn parse_special_reg(&mut self) -> ParseResult<SpecialReg> {
+        let t = self.must_pop()?;
+        let reg = match t.0 {
+            Token::ThreadId => SpecialReg::ThreadId,
+            Token::ThreadIdX => SpecialReg::ThreadIdX,
+            Token::ThreadIdY => SpecialReg::ThreadIdY,
+            Token::ThreadIdZ => SpecialReg::ThreadIdZ,
+            Token::NumThreads => SpecialReg::NumThread,
+            Token::NumThreadsX => SpecialReg::NumThreadX,
+            Token::NumThreadsY => SpecialReg::NumThreadY,
+            Token::NumThreadsZ => SpecialReg::NumThreadZ,
+            Token::CtaId => SpecialReg::CtaId,
+            Token::CtaIdX => SpecialReg::CtaIdX,
+            Token::CtaIdY => SpecialReg::CtaIdY,
+            Token::CtaIdZ => SpecialReg::CtaIdZ,
+            _ => return Err(self.unexpected(t)),
+        };
+        Ok(reg)
+    }
+
+    fn parse_rounding_mode(&mut self) -> ParseResult<RoundingMode> {
+        let t = self.must_pop()?;
+        let mode = match t.0 {
+            Token::Rn => RoundingMode::NearestEvent,
+            Token::Rz => RoundingMode::Zero,
+            Token::Rm => RoundingMode::NegInf,
+            Token::Rp => RoundingMode::PosInf,
+            _ => return Err(self.unexpected(t)),
+        };
+        Ok(mode)
+    }
+
+    fn parse_mul_mode(&mut self) -> ParseResult<MulMode> {
+        let t = self.must_pop()?;
+        let mode = match t.0 {
+            Token::Low => MulMode::Low,
+            Token::High => MulMode::High,
+            Token::Wide => MulMode::Wide,
+            _ => return Err(self.unexpected(t)),
+        };
+        Ok(mode)
+    }
+
+    fn parse_variable(&mut self) -> ParseResult<VarDecl> {
+        let state_space = self.parse_state_space()?;
+
+        let t = self.get()?;
+        let alignment = if let Some((Token::Align, _)) = t {
+            Some(self.parse_alignment()?)
+        } else {
+            None
+        };
+
+        let t = self.get()?;
+        let vector = match t {
+            Some((Token::V2, _)) => {
+                self.skip();
+                Some(Vector::V2)
+            }
+            Some((Token::V4, _)) => {
+                self.skip();
+                Some(Vector::V4)
+            }
+            _ => None,
+        };
+
+        let ty = self.parse_type()?;
+
+        let t = self.must_pop()?;
+        let ident = match t.0 {
+            Token::Identifier(s) => s.to_string(),
+            _ => return Err(self.unexpected(t)),
+        };
+
+        let t = self.must_get()?;
+        let multiplicity = match t.0 {
+            Token::RegMultiplicity(m) => {
+                self.skip();
+                Some(*m)
+            }
+            _ => None,
+        };
+
+        let array_bounds = self.parse_array_bounds()?;
+
+        self.consume(Token::Semicolon)?;
+
+        Ok(
+            VarDecl {
+                state_space,
+                ty,
+                vector,
+                alignment,
+                array_bounds,
+                ident: ident.to_string(),
+                multiplicity,
+            },
+        )
+    }
+
+    fn parse_guard(&mut self) -> ParseResult<Guard> {
+        self.consume(Token::At)?;
+        let t = self.must_pop()?;
+        let guard = match t.0 {
+            Token::Identifier(s) => Guard::Normal(s.to_string()),
+            Token::Exclamation => {
+                let t = self.must_pop()?;
+                let ident = match t.0 {
+                    Token::Identifier(s) => s.clone(),
+                    _ => return Err(self.unexpected(t)),
+                };
+                Guard::Negated(ident.to_string())
+            }
+            _ => return Err(self.unexpected(t)),
+        };
+        Ok(guard)
+    }
+
+    fn parse_predicate(&mut self) -> ParseResult<PredicateOp> {
+        let t = self.must_pop()?;
+        let pred = match t.0 {
+            Token::Ge => PredicateOp::GreaterThanEqual,
+            Token::Gt => PredicateOp::GreaterThan,
+            Token::Le => PredicateOp::LessThanEqual,
+            Token::Lt => PredicateOp::LessThan,
+            Token::Eq => PredicateOp::Equal,
+            Token::Ne => PredicateOp::NotEqual,
+            _ => return Err(self.unexpected(t)),
+        };
+        Ok(pred)
+    }
+
+    fn parse_operation(&mut self) -> ParseResult<Operation> {
+        let t = self.must_pop()?;
+        match t.0 {
+            Token::Load => {
+                let state_space = self.parse_state_space()?;
+                let ty = self.parse_type()?;
+                Ok(Operation::Load(state_space, ty))
+            }
+            Token::Store => {
+                let state_space = self.parse_state_space()?;
+                let ty = self.parse_type()?;
+                Ok(Operation::Store(state_space, ty))
+            }
+            Token::Move => {
+                let ty = self.parse_type()?;
+                Ok(Operation::Move(ty))
+            }
+            Token::Add => {
+                let ty = self.parse_type()?;
+                Ok(Operation::Add(ty))
+            }
+            Token::Sub => {
+                let ty = self.parse_type()?;
+                Ok(Operation::Sub(ty))
+            }
+            Token::Or => {
+                let ty = self.parse_type()?;
+                Ok(Operation::Or(ty))
+            }
+            Token::And => {
+                let ty = self.parse_type()?;
+                Ok(Operation::And(ty))
+            }
+            Token::Not => {
+                let ty = self.parse_type()?;
+                Ok(Operation::Not(ty))
+            }
+            Token::Mul => {
+                let mode = self.parse_mul_mode()?;
+                let ty = self.parse_type()?;
+                Ok(Operation::Multiply(mode, ty))
+            }
+            Token::MultiplyAdd => {
+                let mode = self.parse_mul_mode()?;
+                let ty = self.parse_type()?;
+                Ok(Operation::MultiplyAdd(mode, ty))
+            }
+            Token::FusedMulAdd => {
+                let mode = self.parse_rounding_mode()?;
+                let ty = self.parse_type()?;
+                Ok(Operation::FusedMulAdd(mode, ty))
+            }
+            Token::Negate => {
+                let ty = self.parse_type()?;
+                Ok(Operation::Negate(ty))
+            }
+            Token::Convert => {
+                let to = self.parse_type()?;
+                let from = self.parse_type()?;
+                Ok(Operation::Convert { to, from })
+            }
+            Token::Call => {
+                let uniform = scanner.consume_match(Token::Uniform);
+                let ret_param = if let Token::LeftParen = scanner.must_get()? {
+                    scanner.skip();
+                    let ident = match scanner.must_pop()? {
+                        Token::Identifier(s) => s.clone(),
+                        t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                    };
+                    scanner.consume(Token::RightParen)?;
+                    scanner.consume(Token::Comma)?;
+                    Some(ident)
+                } else {
+                    None
+                };
+                let ident = match scanner.must_pop()? {
+                    Token::Identifier(s) => s.clone(),
+                    t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                };
+                scanner.consume(Token::Comma)?;
+                let mut params = Vec::new();
+                if let Token::LeftParen = scanner.must_get()? {
+                    scanner.skip();
+                    loop {
+                        let ident = match scanner.must_pop()? {
+                            Token::Identifier(s) => s.clone(),
+                            t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                        };
+                        params.push(ident);
+                        match scanner.must_pop()? {
+                            Token::RightParen => break,
+                            Token::Comma => {}
+                            t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                        }
+                    }
+                };
+
+                Ok((
+                    Operation::Call {
+                        uniform,
+                        ident: ident.to_string(),
+                        ret_param,
+                        params,
+                    },
+                    scanner,
+                ))
+            }
+            Token::ConvertAddress => match scanner.get() {
+                Some(Token::To) => {
+                    scanner.skip();
+                    let (state_space, scanner) = parse_state_space(scanner)?;
+                    let (ty, scanner) = parse_type(scanner)?;
+                    Ok((Operation::ConvertAddressTo(ty, state_space), scanner))
+                }
+                _ => {
+                    let (state_space, scanner) = parse_state_space(scanner)?;
+                    let (ty, scanner) = parse_type(scanner)?;
+                    Ok((Operation::ConvertAddress(ty, state_space), scanner))
+                }
+            },
+            Token::SetPredicate => {
+                let (pred, scanner) = parse_predicate(scanner)?;
+                let (ty, scanner) = parse_type(scanner)?;
+                Ok((Operation::SetPredicate(pred, ty), scanner))
+            }
+            Token::ShiftLeft => {
+                let (ty, scanner) = parse_type(scanner)?;
+                Ok((Operation::ShiftLeft(ty), scanner))
+            }
+            Token::Branch => {
+                if let Some(Token::Uniform) = scanner.get() {
+                    scanner.skip();
+                }
+                Ok((Operation::Branch, scanner))
+            }
+            Token::Return => Ok((Operation::Return, scanner)),
+            Token::Bar => {
+                // cta token is meaningless
+                if let Some(Token::Cta) = scanner.get() {
+                    scanner.skip();
+                }
+                scanner.consume(Token::Sync)?;
+                Ok((Operation::BarrierSync, scanner))
+            }
+            t => Err(ParseErr::UnexpectedToken(t.clone())),
+        }
+    }
+
+    fn parse_operand(&mut self) -> ParseResult<Operand> {
+        // first try to parse a special register
+        // TODO
+        todo!();
+        if let Ok(operand) = self.parse_special_reg(scanner) {
+            return Ok((Operand::SpecialReg(operand), rest));
+        }
+
+        let t = self.must_pop()?;
+
+        // then fall back to other options
+        let operand = match t.0 {
+            Token::IntegerConst(i) => Operand::Immediate(Immediate::Int64(i)),
+            Token::Float64Const(f) => Operand::Immediate(Immediate::Float64(f)),
+            Token::Float32Const(f) => Operand::Immediate(Immediate::Float32(f)),
+            Token::Identifier(s) => {
+                let t = self.get()?;
+                if let Some((Token::LeftBracket, _)) = t {
+                    todo!("array syntax in operands")
+                } else {
+                    Operand::Variable(s.to_string())
+                }
+            }
+            Token::LeftBracket => {
+                let t = self.must_pop()?;
+                let Token::Identifier(s) = t.0 else {
+                    return Err(self.unexpected(t));
+                };
+                let ident = s.to_string();
+                let res = if let Some(Token::Plus) = scanner.get() {
+                    scanner.skip();
+                    match scanner.must_pop()? {
+                        Token::IntegerConst(i) => {
+                            Operand::Address(AddressOperand::AddressOffset(ident.to_string(), *i))
+                        }
+                        Token::Identifier(s) => Operand::Address(AddressOperand::AddressOffsetVar(
+                            ident.to_string(),
+                            s.to_string(),
+                        )),
+                        t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                    }
+                } else {
+                    Operand::Address(AddressOperand::Address(ident.to_string()))
+                };
+                scanner.consume(Token::RightBracket)?;
+                res
+            }
+            t => return Err(ParseErr::UnexpectedToken(t.clone())),
+        };
+        Ok((operand, scanner))
+    }
+
+    fn parse_operands(mut scanner: Scanner) -> ParseResult<Vec<Operand>> {
+        let mut operands = Vec::new();
+        loop {
+            match scanner.get() {
+                Some(Token::Semicolon) => {
+                    scanner.skip();
+                    break Ok((operands, scanner));
+                }
+                Some(Token::Comma) => scanner.skip(),
+                _ => {}
+            }
+            let (op, remaining) = parse_operand(scanner)?;
+            scanner = remaining;
+            operands.push(op);
+        }
+    }
+
+    fn parse_grouping(mut scanner: Scanner) -> ParseResult<Vec<Statement>> {
+        scanner.consume(Token::LeftBrace)?; // Consume the left brace
+        let mut statements = Vec::new();
+        loop {
+            if let Some(Token::RightBrace) = scanner.get() {
+                scanner.skip();
+                break Ok((statements, scanner));
+            }
+            match parse_statement(scanner) {
+                Ok((basic_block, rest)) => {
+                    statements.push(basic_block);
+                    scanner = rest;
+                }
+                Err(e) => break Err(e),
+            }
+        }
+    }
+
+    fn parse_directive(scanner: Scanner) -> ParseResult<Directive> {
+        let (res, scanner) = match scanner.must_get()? {
+            Token::Version => {
+                let (version, scanner) = parse_version(scanner)?;
+                (Directive::Version(version), scanner)
+            }
+            Token::Target => {
+                let (target, scanner) = parse_target(scanner)?;
+                (Directive::Target(target), scanner)
+            }
+            Token::AddressSize => {
+                let (addr_size, scanner) = parse_address_size(scanner)?;
+                (Directive::AddressSize(addr_size), scanner)
+            }
+            Token::Function | Token::Visible | Token::Entry => {
+                let (function, scanner) = parse_function(scanner)?;
+                (Directive::Function(function), scanner)
+            }
+            Token::Pragma => {
+                let (pragma, scanner) = parse_pragma(scanner)?;
+                (Directive::Pragma(pragma), scanner)
+            }
+            _ => {
+                let (var, scanner) = parse_variable(scanner)?;
+                (Directive::VarDecl(var), scanner)
+            }
+        };
+        Ok((res, scanner))
+    }
+
+    fn parse_instruction(mut scanner: Scanner) -> ParseResult<Instruction> {
+        let guard = if let Ok((guard, res)) = parse_guard(scanner) {
+            scanner = res;
+            Some(guard)
+        } else {
+            None
+        };
+
+        let (specifier, scanner) = parse_operation(scanner)?;
+        let (operands, scanner) = parse_operands(scanner)?;
+
+        Ok((
+            Instruction {
+                guard,
+                specifier,
+                operands,
+            },
+            scanner,
+        ))
+    }
+
+    fn parse_statement(mut scanner: Scanner) -> ParseResult<Statement> {
+        match scanner.must_get()? {
+            Token::LeftBrace => {
+                let (grouping, scanner) = parse_grouping(scanner)?;
+                Ok((Statement::Grouping(grouping), scanner))
+            }
+            t if t.is_directive() => {
+                let (dir, scanner) = parse_directive(scanner)?;
+                Ok((Statement::Directive(dir), scanner))
+            }
+            Token::Identifier(i) => {
+                let i = i.clone();
+                scanner.skip();
+                scanner.consume(Token::Colon)?;
+                Ok((Statement::Label(i.to_string()), scanner))
+            }
+            _ => {
+                let (instr, scanner) = parse_instruction(scanner)?;
+                Ok((Statement::Instruction(instr), scanner))
+            }
+        }
+    }
+
+    fn parse_function_param(mut scanner: Scanner) -> ParseResult<FunctionParam> {
+        scanner.consume(Token::Param)?; // Consume the param keyword
+
+        let alignment = parse_alignment(scanner)
+            .map(|(alignment, res)| {
+                scanner = res;
+                alignment
+            })
+            .ok();
+
+        let (ty, mut scanner) = parse_type(scanner)?;
+        let ident = loop {
+            match scanner.pop() {
+                Some(Token::Identifier(s)) => break s.clone(),
+                // Some(token) => return Err(ParseErr::UnexpectedToken(token)),
+                Some(_) => {}
+                None => return Err(ParseErr::UnexpectedEof),
+            }
+        };
+
+        let (array_bounds, mut scanner) = parse_array_bounds(scanner)?;
+
+        let fparam = FunctionParam {
+            alignment,
+            ident: ident.to_string(),
+            ty,
+            array_bounds,
+        };
+        match scanner.get() {
+            Some(Token::Comma) => {
+                scanner.skip();
+                Ok((fparam, scanner))
+            }
+            Some(Token::RightParen) => Ok((fparam, scanner)),
+            Some(token) => Err(ParseErr::UnexpectedToken(token.clone())),
+            None => Err(ParseErr::UnexpectedEof),
+        }
+    }
+
+    fn parse_function_params(mut scanner: Scanner) -> ParseResult<Vec<FunctionParam>> {
+        // if there is no left parenthesis, there are no parameters
+        if let Some(Token::LeftParen) = scanner.get() {
+            scanner.skip();
+        } else {
+            return Ok((Vec::new(), scanner));
+        }
+        let mut params = Vec::new();
+        loop {
+            match scanner.get() {
+                Some(Token::RightParen) => {
+                    scanner.skip();
+                    break Ok((params, scanner));
+                }
+                Some(_) => {
+                    let (param, rest) = parse_function_param(scanner)?;
+                    params.push(param);
+                    scanner = rest;
+                }
+                None => return Err(ParseErr::UnexpectedEof),
+            }
+        }
+    }
+
+    fn parse_return_param(mut scanner: Scanner) -> ParseResult<Option<FunctionParam>> {
+        if let Some(Token::LeftParen) = scanner.get() {
+            scanner.skip();
+        } else {
+            return Ok((None, scanner));
+        }
+        let (param, mut scanner) = parse_function_param(scanner)?;
+        scanner.consume(Token::RightParen)?;
+        Ok((Some(param), scanner))
+    }
+
+    fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
+        let visible = if let Some(Token::Visible) = scanner.get() {
+            scanner.skip();
+            true
+        } else {
+            false
+        };
+        let entry = match scanner.must_get()? {
+            Token::Entry => true,
+            Token::Function => false,
+            t => return Err(ParseErr::UnexpectedToken(t.clone())),
+        };
+        scanner.skip();
+
+        let (return_param, mut scanner) = parse_return_param(scanner)?;
+
+        let ident = match scanner.must_pop()? {
+            Token::Identifier(s) => s.clone(),
+            t => return Err(ParseErr::UnexpectedToken(t.clone())),
+        };
+        let noreturn = if let Some(Token::NoReturn) = scanner.get() {
+            scanner.skip();
+            true
+        } else {
+            false
+        };
+
+        let (params, scanner) = parse_function_params(scanner)?;
+        let (body, scanner) = parse_statement(scanner)?;
+
+        Ok((
+            Function {
+                ident: ident.to_string(),
+                visible,
+                entry,
+                return_param,
+                noreturn,
+                params,
+                body: Box::new(body),
+            },
+            scanner,
+        ))
+    }
 }
 
 pub fn parse_program(src: &str) -> Result<Module, ParseErr> {
-    let mut lex0 = Token::lexer(src);
-    let mut lex1 = lex0;
-    lex0.bump(10);
-    lex1.bump(10);
-
     let mut tokens = Vec::new();
     for (res, span) in Token::lexer(src).spanned() {
         match res {
             Ok(token) => tokens.push((token, span)),
-            Err(e) => return Err(ParseErr::LexError(e, find_position(src, span.start)))
+            Err(e) => return Err(ParseErr::LexError(e, find_position(src, span.start))),
         }
     }
     let scanner = Scanner::new(src, &tokens);
     parse_module(scanner).map(|(module, _)| module)
 }
-
-type TokenLexer<'a> = Lexer<'a, Token<'a>>;
-
-fn parse_pragma2(mut lexer: TokenLexer) -> ParseResult<Pragma> {
-    scanner.consume(Token::Pragma)?;
-    match scanner.must_pop()? {
-        Token::StringLiteral(s) => {
-            scanner.consume(Token::Semicolon)?;
-            Ok((Pragma { value: s.clone() }, scanner))
-        }
-        t => Err(ParseErr::UnexpectedToken(t.clone())),
-    }
-}
-
-fn parse_pragma(mut scanner: Scanner) -> ParseResult<Pragma> {
-    scanner.consume(Token::Pragma)?;
-    match scanner.must_pop()? {
-        Token::StringLiteral(s) => {
-            scanner.consume(Token::Semicolon)?;
-            Ok((Pragma { value: s.clone() }, scanner))
-        }
-        t => Err(ParseErr::UnexpectedToken(t.clone())),
-    }
-}
-
-fn parse_version(mut scanner: Scanner) -> ParseResult<Version> {
-    scanner.consume(Token::Version)?;
-    match scanner.must_pop()? {
-        Token::VersionNumber(version) => Ok((*version, scanner)),
-        t => Err(ParseErr::UnexpectedToken(t.clone())),
-    }
-}
-
-fn parse_target(mut scanner: Scanner) -> ParseResult<String> {
-    scanner.consume(Token::Target)?;
-    let target = scanner.pop().ok_or(ParseErr::UnexpectedEof)?;
-    let Token::Identifier(target) = target else {
-        return Err(ParseErr::UnexpectedToken(target.clone()));
-    };
-    Ok((target.to_string(), scanner))
-}
-
-fn parse_address_size(mut scanner: Scanner) -> ParseResult<AddressSize> {
-    scanner.consume(Token::AddressSize)?;
-    let size = scanner.pop().ok_or(ParseErr::UnexpectedEof)?;
-    let Token::IntegerConst(size) = size else {
-        return Err(ParseErr::UnexpectedToken(size.clone()));
-    };
-    match size {
-        32 => Ok((AddressSize::Adr32, scanner)),
-        64 => Ok((AddressSize::Adr64, scanner)),
-        _ => Ok((AddressSize::Other, scanner)),
-    }
-}
-
-fn parse_module(mut scanner: Scanner) -> ParseResult<Module> {
-    let mut directives = Vec::new();
-    while scanner.get().is_some() {
-        match parse_directive(scanner) {
-            Ok((directive, rest)) => {
-                directives.push(directive);
-                scanner = rest;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Ok((Module(directives), scanner))
-}
-
-fn parse_array_bounds(mut scanner: Scanner) -> ParseResult<Vec<u32>> {
-    let mut bounds = Vec::new();
-    loop {
-        match scanner.get() {
-            Some(Token::LeftBracket) => scanner.skip(),
-            _ => break Ok((bounds, scanner)),
-        }
-        let Token::IntegerConst(bound) = scanner.must_pop()? else {
-            return Err(ParseErr::UnexpectedToken(scanner.must_get()?.clone()));
-        };
-        scanner.consume(Token::RightBracket)?;
-        // todo clean up raw casts
-        bounds.push(*bound as u32);
-    }
-}
-
-fn parse_state_space(mut scanner: Scanner) -> ParseResult<StateSpace> {
-    match scanner.must_pop()? {
-        Token::Global => Ok((StateSpace::Global, scanner)),
-        Token::Local => Ok((StateSpace::Local, scanner)),
-        Token::Shared => Ok((StateSpace::Shared, scanner)),
-        Token::Reg => Ok((StateSpace::Register, scanner)),
-        Token::Param => Ok((StateSpace::Parameter, scanner)),
-        Token::Const => Ok((StateSpace::Constant, scanner)),
-        t => Err(ParseErr::UnexpectedToken(t.clone())),
-    }
-}
-
-fn parse_alignment(mut scanner: Scanner) -> ParseResult<u32> {
-    scanner.consume(Token::Align)?;
-    let alignment = match scanner.must_pop()? {
-        Token::IntegerConst(i) => *i as u32,
-        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-    };
-    Ok((alignment, scanner))
-}
-
-fn parse_type(mut scanner: Scanner) -> ParseResult<Type> {
-    let ty = match scanner.must_pop()? {
-        Token::Bit8 => Type::B8,
-        Token::Bit16 => Type::B16,
-        Token::Bit32 => Type::B32,
-        Token::Bit64 => Type::B64,
-        Token::Bit128 => Type::B128,
-        Token::Unsigned8 => Type::U8,
-        Token::Unsigned16 => Type::U16,
-        Token::Unsigned32 => Type::U32,
-        Token::Unsigned64 => Type::U64,
-        Token::Signed8 => Type::S8,
-        Token::Signed16 => Type::S16,
-        Token::Signed32 => Type::S32,
-        Token::Signed64 => Type::S64,
-        Token::Float16 => Type::F16,
-        Token::Float16x2 => Type::F16x2,
-        Token::Float32 => Type::F32,
-        Token::Float64 => Type::F64,
-        Token::Predicate => Type::Pred,
-        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-    };
-    Ok((ty, scanner))
-}
-
-fn parse_special_reg(mut scanner: Scanner) -> ParseResult<SpecialReg> {
-    let reg = match scanner.must_pop()? {
-        Token::ThreadId => SpecialReg::ThreadId,
-        Token::ThreadIdX => SpecialReg::ThreadIdX,
-        Token::ThreadIdY => SpecialReg::ThreadIdY,
-        Token::ThreadIdZ => SpecialReg::ThreadIdZ,
-        Token::NumThreads => SpecialReg::NumThread,
-        Token::NumThreadsX => SpecialReg::NumThreadX,
-        Token::NumThreadsY => SpecialReg::NumThreadY,
-        Token::NumThreadsZ => SpecialReg::NumThreadZ,
-        Token::CtaId => SpecialReg::CtaId,
-        Token::CtaIdX => SpecialReg::CtaIdX,
-        Token::CtaIdY => SpecialReg::CtaIdY,
-        Token::CtaIdZ => SpecialReg::CtaIdZ,
-        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-    };
-    Ok((reg, scanner))
-}
-
-fn parse_rounding_mode(mut scanner: Scanner) -> ParseResult<RoundingMode> {
-    let mode = match scanner.must_pop()? {
-        Token::Rn => RoundingMode::NearestEvent,
-        Token::Rz => RoundingMode::Zero,
-        Token::Rm => RoundingMode::NegInf,
-        Token::Rp => RoundingMode::PosInf,
-        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-    };
-    Ok((mode, scanner))
-}
-
-fn parse_mul_mode(mut scanner: Scanner) -> ParseResult<MulMode> {
-    let mode = match scanner.must_pop()? {
-        Token::Low => MulMode::Low,
-        Token::High => MulMode::High,
-        Token::Wide => MulMode::Wide,
-        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-    };
-    Ok((mode, scanner))
-}
-
-fn parse_variable(scanner: Scanner) -> ParseResult<VarDecl> {
-    let (state_space, mut scanner) = parse_state_space(scanner)?;
-
-    let alignment = parse_alignment(scanner)
-        .map(|(alignment, res)| {
-            scanner = res;
-            alignment
-        })
-        .ok();
-
-    let vector = match scanner.get() {
-        Some(Token::V2) => {
-            scanner.skip();
-            Some(Vector::V2)
-        }
-        Some(Token::V4) => {
-            scanner.skip();
-            Some(Vector::V4)
-        }
-        _ => None,
-    };
-
-    let (ty, mut scanner) = parse_type(scanner)?;
-
-    let ident = match scanner.must_pop()? {
-        Token::Identifier(s) => s.clone(),
-        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-    };
-
-    let multiplicity = match scanner.get() {
-        Some(Token::RegMultiplicity(m)) => {
-            scanner.skip();
-            Some(*m)
-        }
-        _ => None,
-    };
-
-    let (array_bounds, mut scanner) = parse_array_bounds(scanner)?;
-
-    scanner.consume(Token::Semicolon)?;
-
-    Ok((
-        VarDecl {
-            state_space,
-            ty,
-            vector,
-            alignment,
-            array_bounds,
-            ident: ident.to_string(),
-            multiplicity,
-        },
-        scanner,
-    ))
-}
-
-fn parse_guard(mut scanner: Scanner) -> ParseResult<Guard> {
-    scanner.consume(Token::At)?;
-    let guard = match scanner.must_pop()? {
-        Token::Identifier(s) => Guard::Normal(s.to_string()),
-        Token::Exclamation => {
-            let ident = match scanner.must_pop()? {
-                Token::Identifier(s) => s.clone(),
-                t => return Err(ParseErr::UnexpectedToken(t.clone())),
-            };
-            Guard::Negated(ident.to_string())
-        }
-        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-    };
-    Ok((guard, scanner))
-}
-
-fn parse_predicate(mut scanner: Scanner) -> ParseResult<PredicateOp> {
-    let pred = match scanner.must_pop()? {
-        Token::Ge => PredicateOp::GreaterThanEqual,
-        Token::Gt => PredicateOp::GreaterThan,
-        Token::Le => PredicateOp::LessThanEqual,
-        Token::Lt => PredicateOp::LessThan,
-        Token::Eq => PredicateOp::Equal,
-        Token::Ne => PredicateOp::NotEqual,
-        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-    };
-    Ok((pred, scanner))
-}
-
-fn parse_operation(mut scanner: Scanner) -> ParseResult<Operation> {
-    let t = scanner.must_pop()?;
-    match t {
-        Token::Load => {
-            let (state_space, scanner) = parse_state_space(scanner)?;
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::Load(state_space, ty), scanner))
-        }
-        Token::Store => {
-            let (state_space, scanner) = parse_state_space(scanner)?;
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::Store(state_space, ty), scanner))
-        }
-        Token::Move => {
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::Move(ty), scanner))
-        }
-        Token::Add => {
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::Add(ty), scanner))
-        }
-        Token::Sub => {
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::Sub(ty), scanner))
-        }
-        Token::Or => {
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::Or(ty), scanner))
-        }
-        Token::And => {
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::And(ty), scanner))
-        }
-        Token::Not => {
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::Not(ty), scanner))
-        }
-        Token::Mul => {
-            let (mode, scanner) = parse_mul_mode(scanner)?;
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::Multiply(mode, ty), scanner))
-        }
-        Token::MultiplyAdd => {
-            let (mode, scanner) = parse_mul_mode(scanner)?;
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::MultiplyAdd(mode, ty), scanner))
-        }
-        Token::FusedMulAdd => {
-            let (mode, scanner) = parse_rounding_mode(scanner)?;
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::FusedMulAdd(mode, ty), scanner))
-        }
-        Token::Negate => {
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::Negate(ty), scanner))
-        }
-        Token::Convert => {
-            let (to, scanner) = parse_type(scanner)?;
-            let (from, scanner) = parse_type(scanner)?;
-            Ok((Operation::Convert { to, from }, scanner))
-        }
-        Token::Call => {
-            let uniform = scanner.consume_match(Token::Uniform);
-            let ret_param = if let Token::LeftParen = scanner.must_get()? {
-                scanner.skip();
-                let ident = match scanner.must_pop()? {
-                    Token::Identifier(s) => s.clone(),
-                    t => return Err(ParseErr::UnexpectedToken(t.clone())),
-                };
-                scanner.consume(Token::RightParen)?;
-                scanner.consume(Token::Comma)?;
-                Some(ident)
-            } else {
-                None
-            };
-            let ident = match scanner.must_pop()? {
-                Token::Identifier(s) => s.clone(),
-                t => return Err(ParseErr::UnexpectedToken(t.clone())),
-            };
-            scanner.consume(Token::Comma)?;
-            let mut params = Vec::new();
-            if let Token::LeftParen = scanner.must_get()? {
-                scanner.skip();
-                loop {
-                    let ident = match scanner.must_pop()? {
-                        Token::Identifier(s) => s.clone(),
-                        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-                    };
-                    params.push(ident);
-                    match scanner.must_pop()? {
-                        Token::RightParen => break,
-                        Token::Comma => {}
-                        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-                    }
-                }
-            };
-
-            Ok((
-                Operation::Call {
-                    uniform,
-                    ident: ident.to_string(),
-                    ret_param,
-                    params,
-                },
-                scanner,
-            ))
-        }
-        Token::ConvertAddress => match scanner.get() {
-            Some(Token::To) => {
-                scanner.skip();
-                let (state_space, scanner) = parse_state_space(scanner)?;
-                let (ty, scanner) = parse_type(scanner)?;
-                Ok((
-                    Operation::ConvertAddressTo(ty, state_space),
-                    scanner,
-                ))
-            }
-            _ => {
-                let (state_space, scanner) = parse_state_space(scanner)?;
-                let (ty, scanner) = parse_type(scanner)?;
-                Ok((
-                    Operation::ConvertAddress(ty, state_space),
-                    scanner,
-                ))
-            }
-        },
-        Token::SetPredicate => {
-            let (pred, scanner) = parse_predicate(scanner)?;
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::SetPredicate(pred, ty), scanner))
-        }
-        Token::ShiftLeft => {
-            let (ty, scanner) = parse_type(scanner)?;
-            Ok((Operation::ShiftLeft(ty), scanner))
-        }
-        Token::Branch => {
-            if let Some(Token::Uniform) = scanner.get() {
-                scanner.skip();
-            }
-            Ok((Operation::Branch, scanner))
-        }
-        Token::Return => Ok((Operation::Return, scanner)),
-        Token::Bar => {
-            // cta token is meaningless
-            if let Some(Token::Cta) = scanner.get() {
-                scanner.skip();
-            }
-            scanner.consume(Token::Sync)?;
-            Ok((Operation::BarrierSync, scanner))
-        }
-        t => Err(ParseErr::UnexpectedToken(t.clone())),
-    }
-}
-
-fn parse_operand(mut scanner: Scanner) -> ParseResult<Operand> {
-    // first try to parse a special register
-    if let Ok((operand, rest)) = parse_special_reg(scanner) {
-        return Ok((Operand::SpecialReg(operand), rest));
-    }
-    // then fall back to other options
-    let operand = match scanner.must_pop()? {
-        Token::IntegerConst(i) => Operand::Immediate(Immediate::Int64(*i)),
-        Token::Float64Const(f) => Operand::Immediate(Immediate::Float64(*f)),
-        Token::Float32Const(f) => Operand::Immediate(Immediate::Float32(*f)),
-        Token::Identifier(s) => {
-            if let Some(Token::LeftBracket) = scanner.get() {
-                // array syntax
-                todo!()
-            } else {
-                Operand::Variable(s.to_string())
-            }
-        }
-        Token::LeftBracket => {
-            let ident = match scanner.must_pop()? {
-                Token::Identifier(s) => s.clone(),
-                t => return Err(ParseErr::UnexpectedToken(t.clone())),
-            };
-            let res = if let Some(Token::Plus) = scanner.get() {
-                scanner.skip();
-                match scanner.must_pop()? {
-                    Token::IntegerConst(i) => {
-                        Operand::Address(AddressOperand::AddressOffset(ident.to_string(), *i))
-                    }
-                    Token::Identifier(s) => {
-                        Operand::Address(AddressOperand::AddressOffsetVar(ident.to_string(), s.to_string()))
-                    }
-                    t => return Err(ParseErr::UnexpectedToken(t.clone())),
-                }
-            } else {
-                Operand::Address(AddressOperand::Address(ident.to_string()))
-            };
-            scanner.consume(Token::RightBracket)?;
-            res
-        }
-        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-    };
-    Ok((operand, scanner))
-}
-
-fn parse_operands(mut scanner: Scanner) -> ParseResult<Vec<Operand>> {
-    let mut operands = Vec::new();
-    loop {
-        match scanner.get() {
-            Some(Token::Semicolon) => {
-                scanner.skip();
-                break Ok((operands, scanner));
-            }
-            Some(Token::Comma) => scanner.skip(),
-            _ => {}
-        }
-        let (op, remaining) = parse_operand(scanner)?;
-        scanner = remaining;
-        operands.push(op);
-    }
-}
-
-fn parse_grouping(mut scanner: Scanner) -> ParseResult<Vec<Statement>> {
-    scanner.consume(Token::LeftBrace)?; // Consume the left brace
-    let mut statements = Vec::new();
-    loop {
-        if let Some(Token::RightBrace) = scanner.get() {
-            scanner.skip();
-            break Ok((statements, scanner));
-        }
-        match parse_statement(scanner) {
-            Ok((basic_block, rest)) => {
-                statements.push(basic_block);
-                scanner = rest;
-            }
-            Err(e) => break Err(e),
-        }
-    }
-}
-
-fn parse_directive(scanner: Scanner) -> ParseResult<Directive> {
-    let (res, scanner) = match scanner.must_get()? {
-        Token::Version => {
-            let (version, scanner) = parse_version(scanner)?;
-            (Directive::Version(version), scanner)
-        }
-        Token::Target => {
-            let (target, scanner) = parse_target(scanner)?;
-            (Directive::Target(target), scanner)
-        }
-        Token::AddressSize => {
-            let (addr_size, scanner) = parse_address_size(scanner)?;
-            (Directive::AddressSize(addr_size), scanner)
-        }
-        Token::Function | Token::Visible | Token::Entry => {
-            let (function, scanner) = parse_function(scanner)?;
-            (Directive::Function(function), scanner)
-        }
-        Token::Pragma => {
-            let (pragma, scanner) = parse_pragma(scanner)?;
-            (Directive::Pragma(pragma), scanner)
-        }
-        _ => {
-            let (var, scanner) = parse_variable(scanner)?;
-            (Directive::VarDecl(var), scanner)
-        }
-    };
-    Ok((res, scanner))
-}
-
-fn parse_instruction(mut scanner: Scanner) -> ParseResult<Instruction> {
-    let guard = if let Ok((guard, res)) = parse_guard(scanner) {
-        scanner = res;
-        Some(guard)
-    } else {
-        None
-    };
-
-    let (specifier, scanner) = parse_operation(scanner)?;
-    let (operands, scanner) = parse_operands(scanner)?;
-
-    Ok((
-        Instruction {
-            guard,
-            specifier,
-            operands,
-        },
-        scanner,
-    ))
-}
-
-fn parse_statement(mut scanner: Scanner) -> ParseResult<Statement> {
-    match scanner.must_get()? {
-        Token::LeftBrace => {
-            let (grouping, scanner) = parse_grouping(scanner)?;
-            Ok((Statement::Grouping(grouping), scanner))
-        }
-        t if t.is_directive() => {
-            let (dir, scanner) = parse_directive(scanner)?;
-            Ok((Statement::Directive(dir), scanner))
-        }
-        Token::Identifier(i) => {
-            let i = i.clone();
-            scanner.skip();
-            scanner.consume(Token::Colon)?;
-            Ok((Statement::Label(i.to_string()), scanner))
-        }
-        _ => {
-            let (instr, scanner) = parse_instruction(scanner)?;
-            Ok((Statement::Instruction(instr), scanner))
-        }
-    }
-}
-
-fn parse_function_param(mut scanner: Scanner) -> ParseResult<FunctionParam> {
-    scanner.consume(Token::Param)?; // Consume the param keyword
-
-    let alignment = parse_alignment(scanner)
-        .map(|(alignment, res)| {
-            scanner = res;
-            alignment
-        })
-        .ok();
-
-    let (ty, mut scanner) = parse_type(scanner)?;
-    let ident = loop {
-        match scanner.pop() {
-            Some(Token::Identifier(s)) => break s.clone(),
-            // Some(token) => return Err(ParseErr::UnexpectedToken(token)),
-            Some(_) => {}
-            None => return Err(ParseErr::UnexpectedEof),
-        }
-    };
-
-    let (array_bounds, mut scanner) = parse_array_bounds(scanner)?;
-
-    let fparam = FunctionParam {
-        alignment,
-        ident: ident.to_string(),
-        ty,
-        array_bounds,
-    };
-    match scanner.get() {
-        Some(Token::Comma) => {
-            scanner.skip();
-            Ok((fparam, scanner))
-        }
-        Some(Token::RightParen) => Ok((fparam, scanner)),
-        Some(token) => Err(ParseErr::UnexpectedToken(token.clone())),
-        None => Err(ParseErr::UnexpectedEof),
-    }
-}
-
-fn parse_function_params(mut scanner: Scanner) -> ParseResult<Vec<FunctionParam>> {
-    // if there is no left parenthesis, there are no parameters
-    if let Some(Token::LeftParen) = scanner.get() {
-        scanner.skip();
-    } else {
-        return Ok((Vec::new(), scanner));
-    }
-    let mut params = Vec::new();
-    loop {
-        match scanner.get() {
-            Some(Token::RightParen) => {
-                scanner.skip();
-                break Ok((params, scanner));
-            }
-            Some(_) => {
-                let (param, rest) = parse_function_param(scanner)?;
-                params.push(param);
-                scanner = rest;
-            }
-            None => return Err(ParseErr::UnexpectedEof),
-        }
-    }
-}
-
-fn parse_return_param(mut scanner: Scanner) -> ParseResult<Option<FunctionParam>> {
-    if let Some(Token::LeftParen) = scanner.get() {
-        scanner.skip();
-    } else {
-        return Ok((None, scanner));
-    }
-    let (param, mut scanner) = parse_function_param(scanner)?;
-    scanner.consume(Token::RightParen)?;
-    Ok((Some(param), scanner))
-}
-
-fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
-    let visible = if let Some(Token::Visible) = scanner.get() {
-        scanner.skip();
-        true
-    } else {
-        false
-    };
-    let entry = match scanner.must_get()? {
-        Token::Entry => true,
-        Token::Function => false,
-        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-    };
-    scanner.skip();
-
-    let (return_param, mut scanner) = parse_return_param(scanner)?;
-
-    let ident = match scanner.must_pop()? {
-        Token::Identifier(s) => s.clone(),
-        t => return Err(ParseErr::UnexpectedToken(t.clone())),
-    };
-    let noreturn = if let Some(Token::NoReturn) = scanner.get() {
-        scanner.skip();
-        true
-    } else {
-        false
-    };
-
-    let (params, scanner) = parse_function_params(scanner)?;
-    let (body, scanner) = parse_statement(scanner)?;
-
-    Ok((
-        Function {
-            ident: ident.to_string(),
-            visible,
-            entry,
-            return_param,
-            noreturn,
-            params,
-            body: Box::new(body),
-        },
-        scanner,
-    ))
-}
-
-// generic address is 64 bits, of which the upper 3 bits denote the space
-// the lower 61 bits denote the address in that space
-
-// addresses specific to a space _do not_ have the space bits set.
-// instead, they are simply offsets into the space
-
-// memory layout design
-// each state space is repsented in the virtual machine as a contiguous block of memory
-// allocated in a rust-native structure, such as a Vec
-//
-// the exception to this is the register space. registers of each type are allocated
-//
 
 #[cfg(test)]
 mod test {
