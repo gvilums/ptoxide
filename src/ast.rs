@@ -63,36 +63,76 @@ impl std::error::Error for LexError {}
 #[logos(skip r"[ \t\n\f]+")] // Ignore this regex pattern between tokens
 #[logos(error = LexError)]
 pub enum Token<'a> {
-    #[token(".version")]
-    Version,
-    #[token(".target")]
-    Target,
     #[token(".address_size")]
     AddressSize,
-    #[token(".func")]
-    Function,
-    #[token(".visible")]
-    Visible,
-    #[token(".entry")]
-    Entry,
-    #[token(".param")]
-    Param,
-    #[token(".reg")]
-    Reg,
-    #[token(".global")]
-    Global,
-    #[token(".local")]
-    Local,
+    #[token(".explicitcluster")]
+    Explicitcluster,
+    #[token(".maxnreg")]
+    Maxnreg,
+    #[token(".section")]
+    Section,
+    #[token(".alias")]
+    Alias,
+    #[token(".extern")]
+    Extern,
+    #[token(".maxntid")]
+    Maxntid,
     #[token(".shared")]
     Shared,
-    #[token(".const")]
-    Const,
     #[token(".align")]
     Align,
+    #[token(".file")]
+    File,
+    #[token(".minnctapersm")]
+    Minnctapersm,
+    #[token(".sreg")]
+    Sreg,
+    #[token(".branchtargets")]
+    Branchtargets,
+    #[token(".func")]
+    Func,
     #[token(".noreturn")]
-    NoReturn,
+    Noreturn,
+    #[token(".target")]
+    Target,
+    #[token(".callprototype")]
+    Callprototype,
+    #[token(".global")]
+    Global,
+    #[token(".param")]
+    Param,
+    #[token(".tex")]
+    Tex,
+    #[token(".calltargets")]
+    Calltargets,
+    #[token(".loc")]
+    Loc,
     #[token(".pragma")]
     Pragma,
+    #[token(".version")]
+    Version,
+    #[token(".common")]
+    Common,
+    #[token(".local")]
+    Local,
+    #[token(".reg")]
+    Reg,
+    #[token(".visible")]
+    Visible,
+    #[token(".const")]
+    Const,
+    #[token(".maxclusterrank")]
+    Maxclusterrank,
+    #[token(".reqnctapercluster")]
+    Reqnctapercluster,
+    #[token(".weak")]
+    Weak,
+    #[token(".entry")]
+    Entry,
+    #[token(".maxnctapersm")]
+    Maxnctapersm,
+    #[token(".reqntid")]
+    Reqntid,
 
     #[token(".b128")]
     Bit128,
@@ -136,48 +176,270 @@ pub enum Token<'a> {
     #[token(".v4")]
     V4,
 
-    #[token("ld")]
-    Load,
-    #[token("st")]
-    Store,
+    #[token("abs")]
+    Abs,
+    #[token("discard")]
+    Discard,
+    #[token("min")]
+    Min,
+    #[token("shf")]
+    Shf,
+    #[token("vadd")]
+    Vadd,
+    #[token("activemask")]
+    Activemask,
+    #[token("div")]
+    Div,
+    #[token("mma")]
+    Mma,
+    #[token("shfl")]
+    Shfl,
+    #[token("vadd2")]
+    Vadd2,
     #[token("add")]
     Add,
-    #[token("sub")]
-    Sub,
+    #[token("dp2a")]
+    Dp2A,
+    #[token("mov")]
+    Mov,
+    #[token("shl")]
+    Shl,
+    #[token("vadd4")]
+    Vadd4,
+    #[token("addc")]
+    Addc,
+    #[token("dp4a")]
+    Dp4A,
+    #[token("movmatrix")]
+    Movmatrix,
+    #[token("shr")]
+    Shr,
+    #[token("vavrg2")]
+    Vavrg2,
+    #[token("alloca")]
+    Alloca,
+    #[token("elect")]
+    Elect,
     #[token("mul")]
     Mul,
-    #[token("mov")]
-    Move,
-    #[token("mad")]
-    MultiplyAdd,
-    #[token("shl")]
-    ShiftLeft,
-    #[token("cvt")]
-    Convert,
-    #[token("cvta")]
-    ConvertAddress,
-    #[token("ret")]
-    Return,
-    #[token("bra")]
-    Branch,
-    #[token("setp")]
-    SetPredicate,
-    #[token("call")]
-    Call,
-    #[token("or")]
-    Or,
+    #[token("sin")]
+    Sin,
+    #[token("vavrg4")]
+    Vavrg4,
     #[token("and")]
     And,
+    #[token("ex2")]
+    Ex2,
+    #[token("mul24")]
+    Mul24,
+    #[token("slct")]
+    Slct,
+    #[token("vmad")]
+    Vmad,
+    #[token("applypriority")]
+    Applypriority,
+    #[token("exit")]
+    Exit,
+    #[token("multimem")]
+    Multimem,
+    #[token("sqrt")]
+    Sqrt,
+    #[token("vmax")]
+    Vmax,
+    #[token("atom")]
+    Atom,
+    #[token("fence")]
+    Fence,
+    #[token("nanosleep")]
+    Nanosleep,
+    #[token("st")]
+    St,
+    #[token("vmax2")]
+    Vmax2,
+    #[token("bar")]
+    Bar,
+    #[token("fma")]
+    Fma,
+    #[token("neg")]
+    Neg,
+    #[token("stackrestore")]
+    Stackrestore,
+    #[token("vmax4")]
+    Vmax4,
+    #[token("barrier")]
+    Barrier,
+    #[token("fns")]
+    Fns,
     #[token("not")]
     Not,
-    #[token("fma")]
-    FusedMulAdd,
-    #[token("neg")]
-    Negate,
-
-    #[token("bar")]
-    #[token("barrier")]
-    Bar,
+    #[token("stacksave")]
+    Stacksave,
+    #[token("vmin")]
+    Vmin,
+    #[token("bfe")]
+    Bfe,
+    #[token("getctarank")]
+    Getctarank,
+    #[token("or")]
+    Or,
+    #[token("stmatrix")]
+    Stmatrix,
+    #[token("vmin2")]
+    Vmin2,
+    #[token("bfi")]
+    Bfi,
+    #[token("griddepcontrol")]
+    Griddepcontrol,
+    #[token("pmevent")]
+    Pmevent,
+    #[token("sub")]
+    Sub,
+    #[token("vmin4")]
+    Vmin4,
+    #[token("bfind")]
+    Bfind,
+    #[token("isspacep")]
+    Isspacep,
+    #[token("popc")]
+    Popc,
+    #[token("subc")]
+    Subc,
+    #[token("vote")]
+    Vote,
+    #[token("bmsk")]
+    Bmsk,
+    #[token("istypep")]
+    Istypep,
+    #[token("prefetch")]
+    Prefetch,
+    #[token("suld")]
+    Suld,
+    #[token("vset")]
+    Vset,
+    #[token("bra")]
+    Bra,
+    #[token("ld")]
+    Ld,
+    #[token("prefetchu")]
+    Prefetchu,
+    #[token("suq")]
+    Suq,
+    #[token("vset2")]
+    Vset2,
+    #[token("brev")]
+    Brev,
+    #[token("ldmatrix")]
+    Ldmatrix,
+    #[token("prmt")]
+    Prmt,
+    #[token("sured")]
+    Sured,
+    #[token("vset4")]
+    Vset4,
+    #[token("brkpt")]
+    Brkpt,
+    #[token("ldu")]
+    Ldu,
+    #[token("rcp")]
+    Rcp,
+    #[token("sust")]
+    Sust,
+    #[token("vshl")]
+    Vshl,
+    #[token("brx")]
+    Brx,
+    #[token("lg2")]
+    Lg2,
+    #[token("red")]
+    Red,
+    #[token("szext")]
+    Szext,
+    #[token("vshr")]
+    Vshr,
+    #[token("call")]
+    Call,
+    #[token("lop3")]
+    Lop3,
+    #[token("redux")]
+    Redux,
+    #[token("tanh")]
+    Tanh,
+    #[token("vsub")]
+    Vsub,
+    #[token("clz")]
+    Clz,
+    #[token("mad")]
+    Mad,
+    #[token("rem")]
+    Rem,
+    #[token("testp")]
+    Testp,
+    #[token("vsub2")]
+    Vsub2,
+    #[token("cnot")]
+    Cnot,
+    #[token("mad24")]
+    Mad24,
+    #[token("ret")]
+    Ret,
+    #[token("tex")]
+    InsTex,
+    #[token("vsub4")]
+    Vsub4,
+    #[token("copysign")]
+    Copysign,
+    #[token("madc")]
+    Madc,
+    #[token("rsqrt")]
+    Rsqrt,
+    #[token("tld4")]
+    Tld4,
+    #[token("wgmma")]
+    Wgmma,
+    #[token("cos")]
+    Cos,
+    #[token("mapa")]
+    Mapa,
+    #[token("sad")]
+    Sad,
+    #[token("trap")]
+    Trap,
+    #[token("wmma")]
+    Wmma,
+    #[token("cp")]
+    Cp,
+    #[token("match")]
+    Match,
+    #[token("selp")]
+    Selp,
+    #[token("txq")]
+    Txq,
+    #[token("xor")]
+    Xor,
+    #[token("createpolicy")]
+    Createpolicy,
+    #[token("max")]
+    Max,
+    #[token("set")]
+    Set,
+    #[token("vabsdiff")]
+    Vabsdiff,
+    #[token("cvt")]
+    Cvt,
+    #[token("mbarrier")]
+    Mbarrier,
+    #[token("setmaxnreg")]
+    Setmaxnreg,
+    #[token("vabsdiff2")]
+    Vabsdiff2,
+    #[token("cvta")]
+    Cvta,
+    #[token("membar")]
+    Membar,
+    #[token("setp")]
+    Setp,
+    #[token("vabsdiff4")]
+    Vabsdiff4,
 
     #[token(".cta")]
     Cta,
@@ -277,7 +539,7 @@ pub enum Token<'a> {
     #[token("@")]
     At,
     #[token("!")]
-    Exclamation,
+    Bang,
     #[token("+")]
     Plus,
     #[token(";")]
@@ -305,7 +567,7 @@ impl<'a> Token<'a> {
                 | Token::AddressSize
                 | Token::Visible
                 | Token::Entry
-                | Token::Function
+                | Token::Func
                 | Token::Param
                 | Token::Reg
                 | Token::Global
@@ -360,9 +622,7 @@ pub struct Version {
 }
 
 #[derive(Clone, Debug)]
-pub struct Pragma {
-    value: String,
-}
+pub struct Pragma(String);
 
 #[derive(Debug)]
 pub enum AddressSize {
@@ -714,9 +974,7 @@ impl<'a> Parser<'a> {
         match t.0 {
             Token::StringLiteral(s) => {
                 self.consume(Token::Semicolon)?;
-                Ok(Pragma {
-                    value: s.to_string(),
-                })
+                Ok(Pragma(s.to_string()))
             }
             _ => Err(self.unexpected(t)),
         }
@@ -915,7 +1173,7 @@ impl<'a> Parser<'a> {
         let t = self.must_pop()?;
         let guard = match t.0 {
             Token::Identifier(s) => Guard::Normal(s.to_string()),
-            Token::Exclamation => {
+            Token::Bang => {
                 let t = self.must_pop()?;
                 let ident = match t.0 {
                     Token::Identifier(s) => s,
@@ -945,17 +1203,17 @@ impl<'a> Parser<'a> {
     fn parse_operation(&mut self) -> ParseResult<Operation> {
         let t = self.must_pop()?;
         match t.0 {
-            Token::Load => {
+            Token::Ld => {
                 let state_space = self.parse_state_space()?;
                 let ty = self.parse_type()?;
                 Ok(Operation::Load(state_space, ty))
             }
-            Token::Store => {
+            Token::St => {
                 let state_space = self.parse_state_space()?;
                 let ty = self.parse_type()?;
                 Ok(Operation::Store(state_space, ty))
             }
-            Token::Move => {
+            Token::Mov => {
                 let ty = self.parse_type()?;
                 Ok(Operation::Move(ty))
             }
@@ -984,21 +1242,21 @@ impl<'a> Parser<'a> {
                 let ty = self.parse_type()?;
                 Ok(Operation::Multiply(mode, ty))
             }
-            Token::MultiplyAdd => {
+            Token::Mad => {
                 let mode = self.parse_mul_mode()?;
                 let ty = self.parse_type()?;
                 Ok(Operation::MultiplyAdd(mode, ty))
             }
-            Token::FusedMulAdd => {
+            Token::Fma => {
                 let mode = self.parse_rounding_mode()?;
                 let ty = self.parse_type()?;
                 Ok(Operation::FusedMulAdd(mode, ty))
             }
-            Token::Negate => {
+            Token::Neg => {
                 let ty = self.parse_type()?;
                 Ok(Operation::Negate(ty))
             }
-            Token::Convert => {
+            Token::Cvt => {
                 let to = self.parse_type()?;
                 let from = self.parse_type()?;
                 Ok(Operation::Convert { to, from })
@@ -1050,7 +1308,7 @@ impl<'a> Parser<'a> {
                     params,
                 })
             }
-            Token::ConvertAddress => match self.must_get()?.0 {
+            Token::Cvta => match self.must_get()?.0 {
                 Token::To => {
                     self.skip();
                     let state_space = self.parse_state_space()?;
@@ -1063,20 +1321,20 @@ impl<'a> Parser<'a> {
                     Ok(Operation::ConvertAddress(ty, state_space))
                 }
             },
-            Token::SetPredicate => {
+            Token::Setp => {
                 let pred = self.parse_predicate()?;
                 let ty = self.parse_type()?;
                 Ok(Operation::SetPredicate(pred, ty))
             }
-            Token::ShiftLeft => {
+            Token::Shl => {
                 let ty = self.parse_type()?;
                 Ok(Operation::ShiftLeft(ty))
             }
-            Token::Branch => {
+            Token::Bra => {
                 self.consume_match(Token::Uniform)?;
                 Ok(Operation::Branch)
             }
-            Token::Return => Ok(Operation::Return),
+            Token::Ret => Ok(Operation::Return),
             Token::Bar => {
                 // cta token is meaningless
                 self.consume_match(Token::Cta)?;
@@ -1189,7 +1447,7 @@ impl<'a> Parser<'a> {
                 let addr_size = self.parse_address_size()?;
                 Directive::AddressSize(addr_size)
             }
-            Token::Function | Token::Visible | Token::Entry => {
+            Token::Func | Token::Visible | Token::Entry => {
                 let function = self.parse_function()?;
                 Directive::Function(function)
             }
@@ -1314,7 +1572,7 @@ impl<'a> Parser<'a> {
         let t = self.must_pop()?;
         let entry = match t.0 {
             Token::Entry => true,
-            Token::Function => false,
+            Token::Func => false,
             _ => return Err(self.unexpected(t)),
         };
 
@@ -1326,7 +1584,7 @@ impl<'a> Parser<'a> {
             _ => return Err(self.unexpected(t)),
         };
 
-        let noreturn = if let Token::NoReturn = self.must_get()?.0 {
+        let noreturn = if let Token::Noreturn = self.must_get()?.0 {
             self.skip();
             true
         } else {
