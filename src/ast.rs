@@ -59,7 +59,7 @@ impl std::fmt::Display for LexError {
 }
 impl std::error::Error for LexError {}
 
-#[derive(Logos, Debug, PartialEq, Clone)]
+#[derive(Logos, Debug, PartialEq, Clone, Copy)]
 #[logos(skip r"[ \t\n\f]+")] // Ignore this regex pattern between tokens
 #[logos(error = LexError)]
 pub enum Token<'a> {
@@ -287,8 +287,8 @@ pub enum Token<'a> {
     #[token(",")]
     Comma,
 
-    #[regex(r#""[^"]*""#, |lex| lex.slice().to_string())]
-    StringLiteral(String),
+    #[regex(r#""[^"]*""#, |lex| lex.slice())]
+    StringLiteral(&'a str),
     #[regex(r"\d+\.\d+", lex_version_number)]
     VersionNumber(Version),
 
@@ -315,6 +315,12 @@ impl<'a> Token<'a> {
                 | Token::Align
                 | Token::Pragma
         )
+    }
+}
+
+impl<'a> std::fmt::Display for Token<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 
@@ -456,6 +462,12 @@ pub enum SpecialReg {
     NumCtaX,
     NumCtaY,
     NumCtaZ,
+}
+
+impl From<SpecialReg> for Operand {
+    fn from(value: SpecialReg) -> Self {
+        Operand::SpecialReg(value)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -601,14 +613,14 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(src: &str) -> Self {
+    pub fn new(src: &'a str) -> Self {
         Self {
             src,
             inner: Token::lexer(src).spanned().peekable(),
         }
     }
 
-    fn locate(&self, span: &Range<usize>) -> SourceLocation {
+    fn locate(&self, span: Range<usize>) -> SourceLocation {
         let text = self.src.as_bytes();
 
         let mut line = 1;
@@ -633,22 +645,18 @@ impl<'a> Parser<'a> {
     }
 
     fn unexpected(&self, (token, pos): (Token, TokenPos)) -> ParseErr {
-        ParseErr::UnexpectedToken(token.to_string(), self.locate(&pos))
+        ParseErr::UnexpectedToken(token.to_string(), self.locate(pos))
     }
 
-    fn unexpected_ref(&self, (token, pos): (&Token, TokenPos)) -> ParseErr {
-        ParseErr::UnexpectedToken(token.to_string(), self.locate(&pos))
-    }
-
-    fn get(&mut self) -> ParseResult<Option<(&'a Token, TokenPos)>> {
-        match self.inner.peek() {
-            Some((Ok(tok), pos)) => Ok(Some((tok, pos.clone()))),
-            Some((Err(err), pos)) => Err(ParseErr::LexError(*err, self.locate(pos))),
+    fn get(&mut self) -> ParseResult<Option<(Token<'a>, TokenPos)>> {
+        match self.inner.peek().cloned() {
+            Some((Ok(tok), pos)) => Ok(Some((tok, pos))),
+            Some((Err(err), pos)) => Err(ParseErr::LexError(err, self.locate(pos))),
             None => return Ok(None),
         }
     }
 
-    fn must_get(&self) -> Result<(&'a Token, TokenPos), ParseErr> {
+    fn must_get(&mut self) -> Result<(Token<'a>, TokenPos), ParseErr> {
         self.get()?.ok_or(ParseErr::UnexpectedEof)
     }
 
@@ -658,11 +666,11 @@ impl<'a> Parser<'a> {
 
     fn consume(&mut self, token: Token) -> ParseResult<()> {
         let head = self.must_get()?;
-        if head.0 == &token {
+        if head.0 == token {
             self.skip();
             Ok(())
         } else {
-            Err(self.unexpected_ref(head))
+            Err(self.unexpected(head))
         }
     }
 
@@ -670,7 +678,7 @@ impl<'a> Parser<'a> {
         let Some(head) = self.get()? else {
             return Ok(false);
         };
-        if head.0 == &token {
+        if head.0 == token {
             self.skip();
             Ok(true)
         } else {
@@ -681,7 +689,7 @@ impl<'a> Parser<'a> {
     fn pop(&mut self) -> ParseResult<Option<(Token<'a>, TokenPos)>> {
         match self.inner.next() {
             Some((Ok(tok), pos)) => Ok(Some((tok, pos))),
-            Some((Err(err), pos)) => Err(ParseErr::LexError(err, self.locate(&pos))),
+            Some((Err(err), pos)) => Err(ParseErr::LexError(err, self.locate(pos))),
             None => return Ok(None),
         }
     }
@@ -696,7 +704,7 @@ impl<'a> Parser<'a> {
         match t.0 {
             Token::StringLiteral(s) => {
                 self.consume(Token::Semicolon)?;
-                Ok(Pragma { value: s.clone() })
+                Ok(Pragma { value: s.to_string() })
             }
             _ => Err(self.unexpected(t)),
         }
@@ -706,7 +714,7 @@ impl<'a> Parser<'a> {
         self.consume(Token::Version)?;
         let t = self.must_pop()?;
         match t.0 {
-            Token::VersionNumber(version) => Ok((*version, scanner)),
+            Token::VersionNumber(version) => Ok(version),
             _ => Err(self.unexpected(t)),
         }
     }
@@ -812,26 +820,6 @@ impl<'a> Parser<'a> {
         Ok(ty)
     }
 
-    fn parse_special_reg(&mut self) -> ParseResult<SpecialReg> {
-        let t = self.must_pop()?;
-        let reg = match t.0 {
-            Token::ThreadId => SpecialReg::ThreadId,
-            Token::ThreadIdX => SpecialReg::ThreadIdX,
-            Token::ThreadIdY => SpecialReg::ThreadIdY,
-            Token::ThreadIdZ => SpecialReg::ThreadIdZ,
-            Token::NumThreads => SpecialReg::NumThread,
-            Token::NumThreadsX => SpecialReg::NumThreadX,
-            Token::NumThreadsY => SpecialReg::NumThreadY,
-            Token::NumThreadsZ => SpecialReg::NumThreadZ,
-            Token::CtaId => SpecialReg::CtaId,
-            Token::CtaIdX => SpecialReg::CtaIdX,
-            Token::CtaIdY => SpecialReg::CtaIdY,
-            Token::CtaIdZ => SpecialReg::CtaIdZ,
-            _ => return Err(self.unexpected(t)),
-        };
-        Ok(reg)
-    }
-
     fn parse_rounding_mode(&mut self) -> ParseResult<RoundingMode> {
         let t = self.must_pop()?;
         let mode = match t.0 {
@@ -890,7 +878,7 @@ impl<'a> Parser<'a> {
         let multiplicity = match t.0 {
             Token::RegMultiplicity(m) => {
                 self.skip();
-                Some(*m)
+                Some(m)
             }
             _ => None,
         };
@@ -1006,104 +994,106 @@ impl<'a> Parser<'a> {
                 Ok(Operation::Convert { to, from })
             }
             Token::Call => {
-                let uniform = scanner.consume_match(Token::Uniform);
-                let ret_param = if let Token::LeftParen = scanner.must_get()? {
-                    scanner.skip();
-                    let ident = match scanner.must_pop()? {
-                        Token::Identifier(s) => s.clone(),
-                        t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                let uniform = self.consume_match(Token::Uniform)?;
+                let ret_param = if let Token::LeftParen = self.must_get()?.0 {
+                    self.skip();
+                    let t = self.must_pop()?;
+                    let ident = match t.0 {
+                        Token::Identifier(s) => s.to_string(),
+                        _ => return Err(self.unexpected(t)),
                     };
-                    scanner.consume(Token::RightParen)?;
-                    scanner.consume(Token::Comma)?;
+                    self.consume(Token::RightParen)?;
+                    self.consume(Token::Comma)?;
                     Some(ident)
                 } else {
                     None
                 };
-                let ident = match scanner.must_pop()? {
-                    Token::Identifier(s) => s.clone(),
-                    t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                let t = self.must_pop()?;
+                let ident = match t.0 {
+                    Token::Identifier(s) => s.to_string(),
+                    _ => return Err(self.unexpected(t)),
                 };
-                scanner.consume(Token::Comma)?;
+                self.consume(Token::Comma)?;
                 let mut params = Vec::new();
-                if let Token::LeftParen = scanner.must_get()? {
-                    scanner.skip();
+                if let Token::LeftParen = self.must_get()?.0 {
+                    self.skip();
                     loop {
-                        let ident = match scanner.must_pop()? {
-                            Token::Identifier(s) => s.clone(),
-                            t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                        let t = self.must_pop()?;
+                        let ident = match t.0 {
+                            Token::Identifier(s) => s.to_string(),
+                            _ => return Err(self.unexpected(t)),
                         };
                         params.push(ident);
-                        match scanner.must_pop()? {
+                        let t = self.must_pop()?;
+                        match t.0 {
                             Token::RightParen => break,
                             Token::Comma => {}
-                            t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                            _ => return Err(self.unexpected(t)),
                         }
                     }
                 };
 
-                Ok((
+                Ok(
                     Operation::Call {
                         uniform,
                         ident: ident.to_string(),
                         ret_param,
                         params,
                     },
-                    scanner,
-                ))
+                )
             }
-            Token::ConvertAddress => match scanner.get() {
-                Some(Token::To) => {
-                    scanner.skip();
-                    let (state_space, scanner) = parse_state_space(scanner)?;
-                    let (ty, scanner) = parse_type(scanner)?;
-                    Ok((Operation::ConvertAddressTo(ty, state_space), scanner))
+            Token::ConvertAddress => match self.must_get()?.0 {
+                Token::To => {
+                    self.skip();
+                    let state_space = self.parse_state_space()?;
+                    let ty = self.parse_type()?;
+                    Ok(Operation::ConvertAddressTo(ty, state_space))
                 }
                 _ => {
-                    let (state_space, scanner) = parse_state_space(scanner)?;
-                    let (ty, scanner) = parse_type(scanner)?;
-                    Ok((Operation::ConvertAddress(ty, state_space), scanner))
+                    let state_space = self.parse_state_space()?;
+                    let ty = self.parse_type()?;
+                    Ok(Operation::ConvertAddress(ty, state_space))
                 }
             },
             Token::SetPredicate => {
-                let (pred, scanner) = parse_predicate(scanner)?;
-                let (ty, scanner) = parse_type(scanner)?;
-                Ok((Operation::SetPredicate(pred, ty), scanner))
+                let pred = self.parse_predicate()?;
+                    let ty = self.parse_type()?;
+                Ok(Operation::SetPredicate(pred, ty))
             }
             Token::ShiftLeft => {
-                let (ty, scanner) = parse_type(scanner)?;
-                Ok((Operation::ShiftLeft(ty), scanner))
+                    let ty = self.parse_type()?;
+                Ok(Operation::ShiftLeft(ty))
             }
             Token::Branch => {
-                if let Some(Token::Uniform) = scanner.get() {
-                    scanner.skip();
-                }
-                Ok((Operation::Branch, scanner))
+                self.consume_match(Token::Uniform)?; 
+                Ok(Operation::Branch)
             }
-            Token::Return => Ok((Operation::Return, scanner)),
+            Token::Return => Ok(Operation::Return),
             Token::Bar => {
                 // cta token is meaningless
-                if let Some(Token::Cta) = scanner.get() {
-                    scanner.skip();
-                }
-                scanner.consume(Token::Sync)?;
-                Ok((Operation::BarrierSync, scanner))
+                self.consume_match(Token::Cta)?; 
+                self.consume(Token::Sync)?;
+                Ok(Operation::BarrierSync)
             }
-            t => Err(ParseErr::UnexpectedToken(t.clone())),
+            _ => Err(self.unexpected(t)),
         }
     }
 
     fn parse_operand(&mut self) -> ParseResult<Operand> {
-        // first try to parse a special register
-        // TODO
-        todo!();
-        if let Ok(operand) = self.parse_special_reg(scanner) {
-            return Ok((Operand::SpecialReg(operand), rest));
-        }
-
         let t = self.must_pop()?;
-
-        // then fall back to other options
         let operand = match t.0 {
+            Token::ThreadId => SpecialReg::ThreadId.into(),
+            Token::ThreadIdX => SpecialReg::ThreadIdX.into(),
+            Token::ThreadIdY => SpecialReg::ThreadIdY.into(),
+            Token::ThreadIdZ => SpecialReg::ThreadIdZ.into(),
+            Token::NumThreads => SpecialReg::NumThread.into(),
+            Token::NumThreadsX => SpecialReg::NumThreadX.into(),
+            Token::NumThreadsY => SpecialReg::NumThreadY.into(),
+            Token::NumThreadsZ => SpecialReg::NumThreadZ.into(),
+            Token::CtaId => SpecialReg::CtaId.into(),
+            Token::CtaIdX => SpecialReg::CtaIdX.into(),
+            Token::CtaIdY => SpecialReg::CtaIdY.into(),
+            Token::CtaIdZ => SpecialReg::CtaIdZ.into(),
             Token::IntegerConst(i) => Operand::Immediate(Immediate::Int64(i)),
             Token::Float64Const(f) => Operand::Immediate(Immediate::Float64(f)),
             Token::Float32Const(f) => Operand::Immediate(Immediate::Float32(f)),
@@ -1121,159 +1111,152 @@ impl<'a> Parser<'a> {
                     return Err(self.unexpected(t));
                 };
                 let ident = s.to_string();
-                let res = if let Some(Token::Plus) = scanner.get() {
-                    scanner.skip();
-                    match scanner.must_pop()? {
+
+                let t = self.must_get()?;
+                let res = if let Token::Plus = t.0 {
+                    self.skip();
+                    let t = self.must_pop()?;
+                    match t.0 {
                         Token::IntegerConst(i) => {
-                            Operand::Address(AddressOperand::AddressOffset(ident.to_string(), *i))
+                            Operand::Address(AddressOperand::AddressOffset(ident, i))
                         }
                         Token::Identifier(s) => Operand::Address(AddressOperand::AddressOffsetVar(
-                            ident.to_string(),
+                            ident,
                             s.to_string(),
                         )),
-                        t => return Err(ParseErr::UnexpectedToken(t.clone())),
+                        _ => return Err(self.unexpected(t)),
                     }
                 } else {
-                    Operand::Address(AddressOperand::Address(ident.to_string()))
+                    Operand::Address(AddressOperand::Address(ident))
                 };
-                scanner.consume(Token::RightBracket)?;
+                self.consume(Token::RightBracket)?;
                 res
             }
-            t => return Err(ParseErr::UnexpectedToken(t.clone())),
+            _ => return Err(self.unexpected(t)),
         };
-        Ok((operand, scanner))
+        Ok(operand)
     }
 
-    fn parse_operands(mut scanner: Scanner) -> ParseResult<Vec<Operand>> {
+    fn parse_operands(&mut self) -> ParseResult<Vec<Operand>> {
         let mut operands = Vec::new();
         loop {
-            match scanner.get() {
-                Some(Token::Semicolon) => {
-                    scanner.skip();
-                    break Ok((operands, scanner));
+            let t = self.must_get()?;
+            match t.0 {
+                Token::Semicolon => {
+                    self.skip();
+                    break Ok(operands);
                 }
-                Some(Token::Comma) => scanner.skip(),
+                Token::Comma => self.skip(),
                 _ => {}
             }
-            let (op, remaining) = parse_operand(scanner)?;
-            scanner = remaining;
+            let op = self.parse_operand()?;
             operands.push(op);
         }
     }
 
-    fn parse_grouping(mut scanner: Scanner) -> ParseResult<Vec<Statement>> {
-        scanner.consume(Token::LeftBrace)?; // Consume the left brace
+    fn parse_grouping(&mut self) -> ParseResult<Vec<Statement>> {
+        self.consume(Token::LeftBrace)?; // Consume the left brace
         let mut statements = Vec::new();
         loop {
-            if let Some(Token::RightBrace) = scanner.get() {
-                scanner.skip();
-                break Ok((statements, scanner));
+            let t = self.must_get()?;
+            if let Token::RightBrace = t.0 {
+                self.skip();
+                break Ok(statements);
             }
-            match parse_statement(scanner) {
-                Ok((basic_block, rest)) => {
-                    statements.push(basic_block);
-                    scanner = rest;
-                }
-                Err(e) => break Err(e),
-            }
+            statements.push(self.parse_statement()?);
         }
     }
 
-    fn parse_directive(scanner: Scanner) -> ParseResult<Directive> {
-        let (res, scanner) = match scanner.must_get()? {
+    fn parse_directive(&mut self) -> ParseResult<Directive> {
+        let t = self.must_get()?;
+        let res = match t.0 {
             Token::Version => {
-                let (version, scanner) = parse_version(scanner)?;
-                (Directive::Version(version), scanner)
+                let version = self.parse_version()?;
+                Directive::Version(version)
             }
             Token::Target => {
-                let (target, scanner) = parse_target(scanner)?;
-                (Directive::Target(target), scanner)
+                let target = self.parse_target()?;
+                Directive::Target(target)
             }
             Token::AddressSize => {
-                let (addr_size, scanner) = parse_address_size(scanner)?;
-                (Directive::AddressSize(addr_size), scanner)
+                let addr_size = self.parse_address_size()?;
+                Directive::AddressSize(addr_size)
             }
             Token::Function | Token::Visible | Token::Entry => {
-                let (function, scanner) = parse_function(scanner)?;
-                (Directive::Function(function), scanner)
+                let function = self.parse_function()?;
+                Directive::Function(function)
             }
             Token::Pragma => {
-                let (pragma, scanner) = parse_pragma(scanner)?;
-                (Directive::Pragma(pragma), scanner)
+                let pragma = self.parse_pragma()?;
+                Directive::Pragma(pragma)
             }
             _ => {
-                let (var, scanner) = parse_variable(scanner)?;
-                (Directive::VarDecl(var), scanner)
+                let var = self.parse_variable()?;
+                Directive::VarDecl(var)
             }
         };
-        Ok((res, scanner))
+        Ok(res)
     }
 
-    fn parse_instruction(mut scanner: Scanner) -> ParseResult<Instruction> {
-        let guard = if let Ok((guard, res)) = parse_guard(scanner) {
-            scanner = res;
-            Some(guard)
+    fn parse_instruction(&mut self) -> ParseResult<Instruction> {
+        let t = self.must_get()?;
+        let guard = if let Token::At = t.0 {
+            Some(self.parse_guard()?)
         } else {
             None
         };
 
-        let (specifier, scanner) = parse_operation(scanner)?;
-        let (operands, scanner) = parse_operands(scanner)?;
+        let specifier = self.parse_operation()?;
+        let operands = self.parse_operands()?;
 
-        Ok((
+        Ok(
             Instruction {
                 guard,
                 specifier,
                 operands,
             },
-            scanner,
-        ))
+        )
     }
 
-    fn parse_statement(mut scanner: Scanner) -> ParseResult<Statement> {
-        match scanner.must_get()? {
+    fn parse_statement(&mut self) -> ParseResult<Statement> {
+        let t = self.must_get()?;
+        match t.0 {
             Token::LeftBrace => {
-                let (grouping, scanner) = parse_grouping(scanner)?;
-                Ok((Statement::Grouping(grouping), scanner))
+                let grouping = self.parse_grouping()?;
+                Ok(Statement::Grouping(grouping))
             }
             t if t.is_directive() => {
-                let (dir, scanner) = parse_directive(scanner)?;
-                Ok((Statement::Directive(dir), scanner))
+                let dir = self.parse_directive()?;
+                Ok(Statement::Directive(dir))
             }
             Token::Identifier(i) => {
-                let i = i.clone();
-                scanner.skip();
-                scanner.consume(Token::Colon)?;
-                Ok((Statement::Label(i.to_string()), scanner))
+                let i = i.to_string();
+                self.skip();
+                self.consume(Token::Colon)?;
+                Ok(Statement::Label(i.to_string()))
             }
             _ => {
-                let (instr, scanner) = parse_instruction(scanner)?;
-                Ok((Statement::Instruction(instr), scanner))
+                let instr = self.parse_instruction()?;
+                Ok(Statement::Instruction(instr))
             }
         }
     }
 
-    fn parse_function_param(mut scanner: Scanner) -> ParseResult<FunctionParam> {
-        scanner.consume(Token::Param)?; // Consume the param keyword
+    fn parse_function_param(&mut self) -> ParseResult<FunctionParam> {
+        self.consume(Token::Param)?; // Consume the param keyword
 
-        let alignment = parse_alignment(scanner)
-            .map(|(alignment, res)| {
-                scanner = res;
-                alignment
-            })
-            .ok();
+        let alignment = None; // todo parse alignment in function param
 
-        let (ty, mut scanner) = parse_type(scanner)?;
+        let ty = self.parse_type()?;
         let ident = loop {
-            match scanner.pop() {
-                Some(Token::Identifier(s)) => break s.clone(),
-                // Some(token) => return Err(ParseErr::UnexpectedToken(token)),
-                Some(_) => {}
-                None => return Err(ParseErr::UnexpectedEof),
+            let t = self.must_pop()?;
+            match t.0 {
+                Token::Identifier(s) => break s.to_string(),
+                _ => {}
             }
         };
 
-        let (array_bounds, mut scanner) = parse_array_bounds(scanner)?;
+        let array_bounds = self.parse_array_bounds()?;
 
         let fparam = FunctionParam {
             alignment,
@@ -1281,83 +1264,81 @@ impl<'a> Parser<'a> {
             ty,
             array_bounds,
         };
-        match scanner.get() {
-            Some(Token::Comma) => {
-                scanner.skip();
-                Ok((fparam, scanner))
-            }
-            Some(Token::RightParen) => Ok((fparam, scanner)),
-            Some(token) => Err(ParseErr::UnexpectedToken(token.clone())),
-            None => Err(ParseErr::UnexpectedEof),
+
+        let t = self.must_pop()?;
+        match t.0 {
+            Token::Comma | Token::RightParen => Ok(fparam),
+            _ => Err(self.unexpected(t)),
         }
     }
 
-    fn parse_function_params(mut scanner: Scanner) -> ParseResult<Vec<FunctionParam>> {
+    fn parse_function_params(&mut self) -> ParseResult<Vec<FunctionParam>> {
         // if there is no left parenthesis, there are no parameters
-        if let Some(Token::LeftParen) = scanner.get() {
-            scanner.skip();
+        let t = self.must_get()?;
+        if let Token::LeftParen = t.0 {
+            self.skip();
         } else {
-            return Ok((Vec::new(), scanner));
+            return Ok(Vec::new());
         }
         let mut params = Vec::new();
         loop {
-            match scanner.get() {
-                Some(Token::RightParen) => {
-                    scanner.skip();
-                    break Ok((params, scanner));
+            let t = self.must_get()?;
+            match t.0 {
+                Token::RightParen => {
+                    self.skip();
+                    break Ok(params);
                 }
-                Some(_) => {
-                    let (param, rest) = parse_function_param(scanner)?;
-                    params.push(param);
-                    scanner = rest;
+                _ => {
+                    params.push(self.parse_function_param()?);
                 }
-                None => return Err(ParseErr::UnexpectedEof),
             }
         }
     }
 
-    fn parse_return_param(mut scanner: Scanner) -> ParseResult<Option<FunctionParam>> {
-        if let Some(Token::LeftParen) = scanner.get() {
-            scanner.skip();
+    fn parse_return_param(&mut self) -> ParseResult<Option<FunctionParam>> {
+        let t = self.must_get()?;
+        if let Token::LeftParen = t.0 {
+            self.skip();
         } else {
-            return Ok((None, scanner));
+            return Ok(None);
         }
-        let (param, mut scanner) = parse_function_param(scanner)?;
-        scanner.consume(Token::RightParen)?;
-        Ok((Some(param), scanner))
+        let param = self.parse_function_param()?;
+        self.consume(Token::RightParen)?;
+        Ok(Some(param))
     }
 
-    fn parse_function(mut scanner: Scanner) -> ParseResult<Function> {
-        let visible = if let Some(Token::Visible) = scanner.get() {
-            scanner.skip();
+    fn parse_function(&mut self) -> ParseResult<Function> {
+        let visible = if let Token::Visible = self.must_get()?.0 {
+            self.skip();
             true
         } else {
             false
         };
-        let entry = match scanner.must_get()? {
+        let t = self.must_pop()?;
+        let entry = match t.0 {
             Token::Entry => true,
             Token::Function => false,
-            t => return Err(ParseErr::UnexpectedToken(t.clone())),
+            _ => return Err(self.unexpected(t)),
         };
-        scanner.skip();
 
-        let (return_param, mut scanner) = parse_return_param(scanner)?;
+        let return_param = self.parse_return_param()?;
 
-        let ident = match scanner.must_pop()? {
-            Token::Identifier(s) => s.clone(),
-            t => return Err(ParseErr::UnexpectedToken(t.clone())),
+        let t = self.must_pop()?;
+        let ident = match t.0 {
+            Token::Identifier(s) => s.to_string(),
+            _ => return Err(self.unexpected(t)),
         };
-        let noreturn = if let Some(Token::NoReturn) = scanner.get() {
-            scanner.skip();
+
+        let noreturn = if let Token::NoReturn = self.must_get()?.0 {
             true
         } else {
             false
         };
 
-        let (params, scanner) = parse_function_params(scanner)?;
-        let (body, scanner) = parse_statement(scanner)?;
+        let params = self.parse_function_params()?;
+        let body = self.parse_statement()?;
 
-        Ok((
+        Ok(
             Function {
                 ident: ident.to_string(),
                 visible,
@@ -1367,21 +1348,12 @@ impl<'a> Parser<'a> {
                 params,
                 body: Box::new(body),
             },
-            scanner,
-        ))
+        )
     }
 }
 
 pub fn parse_program(src: &str) -> Result<Module, ParseErr> {
-    let mut tokens = Vec::new();
-    for (res, span) in Token::lexer(src).spanned() {
-        match res {
-            Ok(token) => tokens.push((token, span)),
-            Err(e) => return Err(ParseErr::LexError(e, find_position(src, span.start))),
-        }
-    }
-    let scanner = Scanner::new(src, &tokens);
-    parse_module(scanner).map(|(module, _)| module)
+    Parser::new(src).parse_module()
 }
 
 #[cfg(test)]
