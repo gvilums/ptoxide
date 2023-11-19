@@ -298,11 +298,15 @@ impl<'a> Parser<'a> {
         let end = span.end.min(text.len());
 
         for &c in &text[..end] {
-            if c == b'\n' {
-                line += 1;
-                col = 1;
-            } else {
-                col += 1;
+            match c {
+                b'\n' => {
+                    line += 1;
+                    col = 0;
+                },
+                b'\t' => {
+                    col = (col / 4) * 4 + 4;
+                }
+                _ => col += 1,
             }
         }
 

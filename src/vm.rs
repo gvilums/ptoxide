@@ -69,6 +69,7 @@ impl From<crate::ast::Type> for Type {
 #[derive(Debug, Clone, Copy)]
 pub enum Symbol {
     Function(usize),
+    #[allow(dead_code)]
     Variable(usize),
 }
 
